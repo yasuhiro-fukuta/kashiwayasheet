@@ -34,11 +34,13 @@ jobs:
   push:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
-          node-version: '20'
+          # clasp 3.4.1 の engines は node >=20。
+          # Node 20 は 2026-04 に EOL のため LTS の 22 を使う。
+          node-version: '22'
 
       # バージョンは固定する。clasp は v2 → v3 で認証まわりの仕様が
       # 変わっているため、latest だと突然壊れることがある。
