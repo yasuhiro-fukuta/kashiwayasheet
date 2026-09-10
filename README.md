@@ -28,6 +28,21 @@ npm install -g @google/clasp@3.4.1
 clasp login
 ```
 
+> **Windows (PowerShell) で `npm` が実行できない場合**
+>
+> `npm : このシステムではスクリプトの実行が無効になっているため、
+> ファイル ...\npm.ps1 を読み込むことができません` と出るときは、
+> PowerShell の実行ポリシーが `.ps1` をブロックしている。
+> npm や Node の問題ではない。管理者権限は要らない。
+>
+> ```powershell
+> Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned
+> ```
+>
+> ポリシーを変えたくない場合は `.ps1` を経由しない `.cmd` を直接呼ぶ
+> (`npm.cmd i -g ...` / `clasp.cmd login`)。ただし clasp も同じシムを
+> 持つので、以降ずっと `.cmd` を付け続けることになる。
+
 ブラウザが開くので、スプレッドシートの持ち主のアカウントで許可する。
 成功すると `~/.clasprc.json` ができる。
 
@@ -46,9 +61,12 @@ Apps Script エディタ → ⚙ **プロジェクトの設定** → **スクリ
 タイムゾーンや権限スコープが実際のプロジェクトとずれると、
 日付の判定が1日ずれるなど分かりにくい壊れ方をする。
 
+`clasp clone` は **カレントディレクトリにファイルを作る**。
+`C:\WINDOWS\system32` などで実行しないこと。
+
 ```bash
 # 既存コードを壊さないよう、まず別の場所へ落とす
-mkdir -p /tmp/gaspull && cd /tmp/gaspull
+mkdir -p /tmp/gaspull && cd /tmp/gaspull      # Windows: cd ~\Documents; mkdir gaspull; cd gaspull
 clasp clone <スクリプトID>
 
 # マニフェストだけをリポジトリへ持ってくる
@@ -113,6 +131,8 @@ git push          # main なら Actions が自動で反映
 | Actions が `User has not enabled the Apps Script API` で失敗 | 手順1をやる |
 | Actions が認証で失敗するようになった | トークンが失効した可能性。`clasp login` をやり直して `CLASPRC_JSON` を入れ直す |
 | `gas/appsscript.json がありません` で失敗 | 手順4をやる |
+| PowerShell で `npm.ps1 を読み込むことができません` | 実行ポリシー。手順2の注記を参照 |
+| `clasp clone` が `User has not enabled the Apps Script API` | 手順1をやる |
 | 反映したのにシートの表示が変わらない | Apps Script に入っただけ。バッチ (`runBatch` など) を1回流す |
 | E列の赤字が意図と違う | `explainRedKeys()` を実行する |
 
