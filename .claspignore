@@ -1,0 +1,6 @@
+# clasp が Apps Script に送らないファイル。
+# パターンは .clasp.json のある場所からの相対。
+**/README.md
+**/*.md
+**/.DS_Store
+node_modules/**

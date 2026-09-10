@@ -1,0 +1,7 @@
+{
+  "scriptId": "ここに Apps Script の【スクリプトID】を入れる",
+  "rootDir": "gas",
+  "scriptExtensions": [".gs", ".js"],
+  "htmlExtensions": [".html"],
+  "jsonExtensions": [".json"]
+}

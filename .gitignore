@@ -1,0 +1,10 @@
+# clasp の認証情報。絶対にコミットしないこと。
+# リフレッシュトークンが入っており、Apps Script と Drive を操作できてしまう。
+.clasprc.json
+**/.clasprc.json
+
+# スクリプトIDを含むローカル設定。
+# CI 側は SCRIPT_ID シークレットから生成するのでコミット不要。
+.clasp.json
+
+node_modules/
