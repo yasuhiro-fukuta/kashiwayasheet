@@ -79,9 +79,11 @@ function selfTest() {
     if (typeof f !== 'function') { ng(`${fn} が未定義`); return; }
     const src = String(f);
     if (src.indexOf(mark) >= 0) {
-      ok(`${fn} は新版`);
+      // 同じ関数を別の目印で2回見ることがあるので、何を見たかも出す
+      ok(`${fn} は新版 (${mark})`);
     } else {
-      ng(`${fn} が【旧版】のまま (${file} の古いコピーが残っています)`);
+      ng(`${fn} が【旧版】のまま: 目印 "${mark}" が無い ` +
+         `(${file} の古いコピーが残っています)`);
       stale.push(file);
     }
   });
