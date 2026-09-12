@@ -56,6 +56,23 @@ const CONFIG = {
     LODGIFY:        'LodgifyBookings',    // 蓄積・upsert
     CLEANING:       'CleaningBoard',      // 毎回再生成
     CLEAN_OVERRIDE: 'CleaningOverride',   // 手動入力・GASは読むだけ
+    STAFF:          'Staff',              // 担当者一覧 (v2.11 追加・追記のみ)
+  },
+
+  // ── 担当者一覧 (AppSheet の「わたし」ドロップダウンの元) ────────
+  //  CleaningBoard の A列/D列に実際に入っている名前を拾って溜める。
+  //  IGNORE に入れた値は担当者として扱わない。
+  STAFF: {
+    IGNORE: ['-', 'ー', '―', 'none', 'なし'],
+  },
+
+  // Staff シートの列
+  COL_STAFF: {
+    NAME:       1,   // CleaningBoard と完全一致させる照合用の名前
+    DISPLAY:    2,   // 人が読む名前 (手で編集してよい)
+    ROLE:       3,   // 掃除 / 接客 / 掃除・接客
+    FIRST_SEEN: 4,
+    ACTIVE:     5,   // FALSE でドロップダウンから除外
   },
 
   COL_RES: {

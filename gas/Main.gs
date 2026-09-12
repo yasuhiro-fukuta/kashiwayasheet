@@ -42,6 +42,15 @@ function runBatch() {
     const touched = syncOptions(now, prev, disappeared);
     dlog(`=== Reservation/Option sync done: ${touched.length} touched rows ===`);
 
+    // ── 担当者一覧の更新 (AppSheet のドロップダウン用) ────────
+    // 追記のみなので、失敗しても既存の運用には影響しない。
+    try {
+      const st = setupStaffSheet();
+      if (st.added) dlog(`Staff: ${st.added} 名を追加`);
+    } catch (e) {
+      Logger.log(`Staff sheet update FAILED (continuing): ${e.stack || e}`);
+    }
+
     // ── 清掃予定表の生成 ────────────────────────────────────
     // Lodgify が失敗していても、iCal/フォーム/食事推定分で生成できる。
     try {
@@ -312,6 +321,7 @@ function onOpen() {
     .addItem('👥 食事表の人数だけ補完',              'runGuestBackfillOnly')
     .addItem('📋 Check-In Form 未提出を一覧',        'listPendingCheckinForms')
     .addItem('🔍 Check-In Form 読み込み確認',        'dumpCheckinForm')
+    .addItem('👤 担当者一覧を更新 (Staff)',           'runStaffSetupOnly')
     .addItem('❓ E列が赤い理由を調べる',              'explainRedKeys')
     .addItem('🔍 Lodgify レスポンス確認',            'dumpLodgifyBookings')
     .addItem('🩺 直予約・人数の突合診断',            'diagnoseLodgifyMatch')
