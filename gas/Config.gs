@@ -57,6 +57,26 @@ const CONFIG = {
     CLEANING:       'CleaningBoard',      // 毎回再生成
     CLEAN_OVERRIDE: 'CleaningOverride',   // 手動入力・GASは読むだけ
     STAFF:          'Staff',              // 担当者一覧 (v2.11 追加・追記のみ)
+    ISSUES:         '指摘事項',            // 手動入力の矛盾 (v2.13 追加・追記のみ)
+  },
+
+  // 指摘事項シートの列 (人が見て直す。GAS は追記だけ)
+  COL_ISSUE: {
+    KEY:   1,   // 論理削除キー = 元の行を特定するキー (2026-09-18_1F など)
+    SHEET: 2,
+    DATE:  3,
+    ROOM:  4,
+    ISSUE: 5,
+  },
+
+  // ── 手動入力の矛盾チェック (v2.13) ──────────────────────────
+  //  全期間を見ると過去の済んだ話で埋まるため、対象日を絞る。
+  //  DAYS_BACK  … 何日前まで遡って見るか (直したい直近の抜けを拾う)
+  //  DAYS_AHEAD … 何日先まで見るか (先の予定の割り当て漏れを拾う)
+  ISSUE_CHECK: {
+    ENABLED:    true,
+    DAYS_BACK:  3,
+    DAYS_AHEAD: 60,
   },
 
   // ── 担当者一覧 (AppSheet の「わたし」ドロップダウンの元) ────────

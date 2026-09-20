@@ -60,6 +60,15 @@ function runBatch() {
       Logger.log(`CleaningBoard build FAILED (continuing): ${e.stack || e}`);
     }
 
+    // ── 手動入力の矛盾チェック (v2.13) ──────────────────────
+    // 清掃ボードを作り直した後に走らせる。追記のみ。
+    try {
+      const ck = checkConsistency();
+      dlog(`矛盾チェック: ${ck.found}件検出 / ${ck.added}件を新規追記`);
+    } catch (e) {
+      Logger.log(`矛盾チェックに失敗 (処理は続行): ${e.stack || e}`);
+    }
+
     dlog(`=== Batch end ===`);
     setLastProcessedAt(now);
   } catch (e) {
@@ -322,6 +331,7 @@ function onOpen() {
     .addItem('📋 Check-In Form 未提出を一覧',        'listPendingCheckinForms')
     .addItem('🔍 Check-In Form 読み込み確認',        'dumpCheckinForm')
     .addItem('👤 担当者一覧を更新 (Staff)',           'runStaffSetupOnly')
+    .addItem('🔎 手動列の矛盾チェック (指摘事項)',      'runConsistencyCheckOnly')
     .addItem('❓ E列が赤い理由を調べる',              'explainRedKeys')
     .addItem('🔍 Lodgify レスポンス確認',            'dumpLodgifyBookings')
     .addItem('🩺 直予約・人数の突合診断',            'diagnoseLodgifyMatch')

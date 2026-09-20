@@ -86,6 +86,8 @@ iCal が押さえていない「夜」だけを拾って骨格に合流させる
 | `GuestCount.gs` | **人数解決の共通ロジック** (v2.10 新規) |
 | `CleaningBoard.gs` | 清掃予定表の生成 |
 | `CheckinForm.gs` | **Check-In Form (宿泊者名簿) の取込** (v2.10.3 新規) |
+| `Staff.gs` | 担当者一覧の自動生成 (v2.11 新規) |
+| `Consistency.gs` | **手動入力の矛盾チェック → 指摘事項シート** (v2.13 新規) |
 | `Diagnose.gs` | 突合が合わないときの原因切り分け |
 | `Utils.gs` | 日付・全角変換などの共通処理 |
 
@@ -168,6 +170,7 @@ v2.10.3 で `CheckinForm.gs` を新設し後者を見るように直した。
 | `listPendingCheckinForms()` | Check-In Form 未提出者の一覧。**書き込みなし** |
 | `dumpCheckinForm()` | Check-In Form が読めているかの確認。**書き込みなし** |
 | `explainRedKeys()` | E列の赤字の出どころを特定する。**書き込みなし** |
+| `runConsistencyCheckOnly()` | 手動列の矛盾チェック。指摘事項シートに追記する |
 
 `selfTest` の **[1b]** は `Function.prototype.toString()` で関数のソースを見て、
 新版の目印 (呼び出しの形) が含まれるかを判定する。
