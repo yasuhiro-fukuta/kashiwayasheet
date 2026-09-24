@@ -73,10 +73,29 @@ const CONFIG = {
   //  全期間を見ると過去の済んだ話で埋まるため、対象日を絞る。
   //  DAYS_BACK  … 何日前まで遡って見るか (直したい直近の抜けを拾う)
   //  DAYS_AHEAD … 何日先まで見るか (先の予定の割り当て漏れを拾う)
+  //
+  //  RULES … 個々の検査の on/off。false にするとその指摘は出なくなる。
+  //  運用に合わないルールが出てきたら、コードではなくここを切る。
   ISSUE_CHECK: {
     ENABLED:    true,
     DAYS_BACK:  3,
     DAYS_AHEAD: 60,
+    RULES: {
+      // 区間で見る (これが清掃の抜けを見る本命)
+      cleanGap:       true,   // 前の退室から到着まで清掃が1日も無い
+
+      // 1行で見る (入力そのものの食い違い)
+      kindMissing:    true,   // 清掃担当がいるのに種類が空欄
+      cleanerMissing: true,   // 種類があるのに清掃担当が空欄
+      nightMissing:   true,   // 到着日なのに接客担当が空欄
+      setsMismatch:   true,   // べ と 泊人 が不一致
+      unknownStaff:   true,   // 担当者名が Staff シートに無い
+
+      // LatestOptions
+      orderedButGone: true,   // 予約が消えたのに ほなみや転記済=済
+      mealNoStay:     true,   // 食事予約があるが在室が無い
+      guestsMissing:  true,   // 人数が空欄
+    },
   },
 
   // ── 担当者一覧 (AppSheet の「わたし」ドロップダウンの元) ────────

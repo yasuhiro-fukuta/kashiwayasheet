@@ -40,10 +40,30 @@ function checkConsistency() {
 
 /**
  * 検査本体。指摘の配列を返す (シートには触らない)。
+ *
+ * ★設計の前提: 清掃は「日」ではなく「滞在と滞在のあいだ」に割り当てる。
+ *
+ *   1行だけを見て「客が入る日なのに清掃担当が空欄」と判定すると誤検知する。
+ *   売り止めや空室の日が間に入れば到着日に清掃しないことがあるし、
+ *   逆に客がいない日に清掃することもあるためである。
+ *   実データ (2026-08-13〜09-21) では、清掃の割り当て 55件のうち
+ *   17件が宿泊者のいない日に入っていた。
+ *
+ *   そこで清掃の抜けは「直前のチェックアウト日から到着日までのあいだに
+ *   清掃が1日も無いか」で見る。この見方なら売り止めも空室清掃も
+ *   自然に吸収できる。過去データでの反例は 0 件だった。
+ *
+ * ★1行で判定してよいのは「入力そのものの食い違い」だけに絞った。
+ *   状態と種類の組み合わせ (入替×空室、リネン×非連泊 など) は
+ *   過去データに反例があったため、すべて廃止した。
+ *
  * @return {Array<{key:string, sheet:string, date:string, room:string, issue:string}>}
  */
 function collectIssues() {
   const K = CONFIG.ISSUE_CHECK || {};
+  const R = K.RULES || {};
+  const on = (name) => R[name] !== false;
+
   const today = fmtDate(todayJst());
   const from  = addDaysStr(today, -(K.DAYS_BACK  == null ? 3  : K.DAYS_BACK));
   const to    = addDaysStr(today,  (K.DAYS_AHEAD == null ? 60 : K.DAYS_AHEAD));
@@ -52,84 +72,130 @@ function collectIssues() {
   const add = (key, sheet, date, room, issue) =>
     out.push({ key: key, sheet: sheet, date: date, room: room, issue: issue });
 
-  // ── 担当者名の一覧 (打ち間違いの検出に使う) ──────────────
   const known = {};
   webKnownStaffNames().forEach(n => { known[n] = true; });
 
-  // ── CleaningBoard ────────────────────────────────────────
+  // ── CleaningBoard を読み、階ごとの日付順リストにする ──────
   const C = CONFIG.COL_CLEAN;
   const sh = getSheet(CONFIG.SHEET.CLEANING);
   const last = sh.getLastRow();
   const board = (last > 1) ? sh.getRange(2, 1, last - 1, C.UPDATED_AT).getValues() : [];
 
   const ARRIVE = ['IN', 'OUT→IN'];
+  const byRoom = {};        // 階 → 日付順の行
   const occupied = {};      // その夜に宿泊者がいる (日付|階)
-  const covered  = {};      // 清掃ボードが行を持っている日付
+  const covered  = {};      // 清掃ボードが行を持つ日付
 
   board.forEach(row => {
     const d = fmtDate(row[C.DATE - 1]);
     if (!d) return;
-    covered[d] = true;
     const room = String(row[C.ROOM - 1] || '').trim();
+    if (!room) return;
+    covered[d] = true;
     if (String(row[C.GUEST_NAME - 1] || '').trim()) occupied[`${d}|${room}`] = true;
+    //  「空欄」と「"-" と明示的に入力」は意味が違う。
+    //  空欄 = まだ何も決めていない (指摘の対象)
+    //  "-"  = なしと決めた         (指摘の対象にしない)
+    //  この区別をしないと、意図して "-" を入れた行まで指摘してしまう。
+    const rawClean = String(row[C.STAFF_DAY - 1]    || '').trim();
+    const rawNight = String(row[C.STAFF_NIGHT - 1]  || '').trim();
+    const rawKind  = String(row[C.CLEAN_MANUAL - 1] || '').trim();
+
+    const item = {
+      date:  d,
+      key:   String(row[C.KEY - 1] || '').trim(),
+      room:  room,
+      state: String(row[C.STATE - 1] || '').trim(),
+      clean: isNoneMark(rawClean) ? '' : rawClean,
+      night: isNoneMark(rawNight) ? '' : rawNight,
+      kind:  isNoneMark(rawKind)  ? '' : rawKind,
+      cleanBlank: rawClean === '',
+      nightBlank: rawNight === '',
+      kindBlank:  rawKind  === '',
+      sets:  numOrZero(row[C.SET_GUESTS - 1]),
+      ppl:   numOrZero(row[C.GUESTS - 1]),
+      guest: String(row[C.GUEST_NAME - 1] || '').trim(),
+    };
+    (byRoom[room] = byRoom[room] || []).push(item);
   });
+  Object.keys(byRoom).forEach(r =>
+    byRoom[r].sort((a, b) => (a.date < b.date ? -1 : 1)));
 
-  board.forEach(row => {
-    const d = fmtDate(row[C.DATE - 1]);
-    if (!d || d < from || d > to) return;
+  // ── 区間で見る検査: 滞在と滞在のあいだに清掃があるか ────────
+  if (on('cleanGap')) {
+    Object.keys(byRoom).forEach(room => {
+      const list = byRoom[room];
+      let prevOut = -1;                       // 直前にチェックアウトがあった位置
 
-    const key   = String(row[C.KEY - 1] || '').trim();
-    const room  = String(row[C.ROOM - 1] || '').trim();
-    const state = String(row[C.STATE - 1] || '').trim();
-    const clean = normStaffName(row[C.STAFF_DAY - 1]);
-    const night = normStaffName(row[C.STAFF_NIGHT - 1]);
-    const kind  = String(row[C.CLEAN_MANUAL - 1] || '').trim();
-    const sets  = numOrZero(row[C.SET_GUESTS - 1]);
-    const ppl   = numOrZero(row[C.GUESTS - 1]);
-    const guest = String(row[C.GUEST_NAME - 1] || '').trim();
-    const arriving = ARRIVE.indexOf(state) >= 0;
+      list.forEach((it, i) => {
+        if (ARRIVE.indexOf(it.state) >= 0) {
+          // 直前の退室が分からない場合は判定しない (データの先頭など)
+          if (prevOut >= 0 && it.date >= from && it.date <= to) {
+            const win = list.slice(prevOut, i + 1);
+            const cleaned = win.some(x => x.clean);
+            if (!cleaned) {
+              const span = (win.length === 1)
+                ? it.date
+                : `${win[0].date}〜${it.date}`;
+              add(it.key, 'CleaningBoard', it.date, room,
+                `前の退室から到着まで清掃が1日も入っていない (${span}, ${win.length}日)`);
+            }
+          }
+        }
+        if (it.state.indexOf('OUT') >= 0) prevOut = i;
+      });
+    });
+  }
 
-    // 担当・種類の抜け
-    if (arriving && !clean) add(key, 'CleaningBoard', d, room, '客が入る日なのに清掃担当が空欄');
-    if (kind && !clean)     add(key, 'CleaningBoard', d, room, `種類が「${kind}」なのに清掃担当が空欄`);
-    // 種類の空欄は、担当がいるか客が入る日のときだけ指摘する
-    // (何も無い日まで拾うと全部の空室行が出てしまう)
-    if (!kind && (clean || arriving)) {
-      add(key, 'CleaningBoard', d, room, clean
-        ? `清掃担当「${clean}」がいるのに種類が空欄`
-        : '客が入る日なのに種類が空欄');
-    }
-    if (guest && !night) add(key, 'CleaningBoard', d, room, '宿泊者がいるのに接客担当が空欄');
+  // ── 1行で見る検査: 入力そのものの食い違いだけ ──────────────
+  Object.keys(byRoom).forEach(room => {
+    byRoom[room].forEach(it => {
+      if (it.date < from || it.date > to) return;
 
-    // 種類と状態のねじれ
-    if (kind === '入替'  && state === '空室')    add(key, 'CleaningBoard', d, room, '種類が入替だが状態は空室');
-    if (kind === 'リネン' && state !== '連泊')    add(key, 'CleaningBoard', d, room, `種類がリネンだが状態は${state}`);
-    if (kind === 'なし'  && arriving)            add(key, 'CleaningBoard', d, room, '客が入る日なのに種類がなし');
-
-    // 空室なのに担当が残っている (キャンセルの取り残しでよく出る)
-    if (!guest && state === '空室' && kind !== '特別' && (clean || night)) {
-      add(key, 'CleaningBoard', d, room,
-        `空室なのに担当あり (清掃=${clean || '—'} / 接客=${night || '—'})`);
-    }
-
-    // セット人数と実人数のずれ
-    if (sets > 0 && ppl > 0 && sets !== ppl) {
-      add(key, 'CleaningBoard', d, room, `べ(${sets})と泊人(${ppl})が不一致`);
-    }
-
-    // 打ち間違い
-    [[clean, '清掃'], [night, '接客']].forEach(pair => {
-      if (pair[0] && !known[pair[0]]) {
-        add(key, 'CleaningBoard', d, room, `${pair[1]}担当「${pair[0]}」がStaffシートに無い`);
+      // 「なし」と明示した行は対象外。空欄のときだけ指摘する。
+      if (on('kindMissing') && it.clean && it.kindBlank) {
+        add(it.key, 'CleaningBoard', it.date, room,
+          `清掃担当「${it.clean}」がいるのに種類が空欄`);
+      }
+      if (on('cleanerMissing') && it.kind && it.cleanBlank) {
+        add(it.key, 'CleaningBoard', it.date, room,
+          `種類が「${it.kind}」なのに清掃担当が空欄`);
+      }
+      if (on('nightMissing') && ARRIVE.indexOf(it.state) >= 0 && it.nightBlank) {
+        add(it.key, 'CleaningBoard', it.date, room, '到着日なのに接客担当が空欄');
+      }
+      if (on('setsMismatch') && it.sets > 0 && it.ppl > 0 && it.sets !== it.ppl) {
+        add(it.key, 'CleaningBoard', it.date, room,
+          `べ(${it.sets})と泊人(${it.ppl})が不一致`);
+      }
+      if (on('unknownStaff')) {
+        [[it.clean, '清掃'], [it.night, '接客']].forEach(p => {
+          if (p[0] && !known[p[0]]) {
+            add(it.key, 'CleaningBoard', it.date, room,
+              `${p[1]}担当「${p[0]}」がStaffシートに無い`);
+          }
+        });
       }
     });
   });
 
   // ── LatestOptions ────────────────────────────────────────
+  //  こちらは日付単位で意味が閉じているので1行で判定してよい。
   const O = CONFIG.COL_OPT;
   const osh = getSheet(CONFIG.SHEET.LATEST_OPT);
   const olast = osh.getLastRow();
   const opts = (olast > 1) ? osh.getRange(2, 1, olast - 1, 12).getValues() : [];
+
+  //  有効な行がある (宿泊日, 階) を先に集めておく。
+  //  フォームを出し直すと古い行に削除フラグが立つ。これは
+  //  キャンセルではなく再提出なので、指摘してはいけない。
+  const optActive = {};
+  opts.forEach(row => {
+    if (String(row[O.DELETED_FLAG - 1] || '').trim() === '削除') return;
+    const d = fmtDate(row[O.CHECKIN - 1]);
+    const room = String(row[O.ROOM - 1] || '').trim();
+    if (d && room) optActive[`${d}|${room}`] = true;
+  });
 
   opts.forEach(row => {
     const d = fmtDate(row[O.CHECKIN - 1]);
@@ -141,18 +207,15 @@ function collectIssues() {
     const done = String(row[O.HONAMIYA_DONE - 1] || '').trim();
     const key = `${d}_${room}`;
 
-    // 予約が消えたのに、ほなみやには発注済み
-    if (deleted && done === '済') {
+    if (on('orderedButGone') && deleted && done === '済' && !optActive[`${d}|${room}`]) {
       add(key, 'LatestOptions', d, room, `予約が消えたのに ほなみや転記済=済 (${name})`);
     }
     if (deleted) return;
 
-    // 食事の予約があるのに、その日その階に在室が無い
-    // → 部屋の書き間違い、または予約キャンセルの可能性
-    if (covered[d] && room && !occupied[`${d}|${room}`]) {
+    if (on('mealNoStay') && covered[d] && room && !occupied[`${d}|${room}`]) {
       add(key, 'LatestOptions', d, room, `食事予約があるが清掃ボードに在室が無い (${name})`);
     }
-    if (!numOrZero(row[O.GUESTS - 1])) {
+    if (on('guestsMissing') && !numOrZero(row[O.GUESTS - 1])) {
       add(key, 'LatestOptions', d, room, `人数が空欄 (${name})`);
     }
   });
@@ -247,12 +310,22 @@ function webKnownStaffNames() {
 }
 
 /**
+ * 「なし」を意味する入力かどうか ("-" など)。
+ * CONFIG.STAFF.IGNORE の値をそのまま流用する。
+ */
+function isNoneMark(s) {
+  const v = String(s == null ? '' : s).trim();
+  if (!v) return false;
+  return (CONFIG.STAFF.IGNORE || []).indexOf(v) >= 0;
+}
+
+/**
  * 担当者名の正規化。前後の空白を落とし、「担当なし」の表記は空にする。
  */
 function normStaffName(v) {
   const s = String(v == null ? '' : v).trim();
   if (!s) return '';
-  if ((CONFIG.STAFF.IGNORE || []).indexOf(s) >= 0) return '';
+  if (isNoneMark(s)) return '';
   return s;
 }
 
