@@ -1,22 +1,29 @@
 /**
  * ============================================================
- *  Consistency.gs - 手動入力の矛盾を洗い出す (v2.13)
+ *  Consistency.gs - 手動入力の矛盾を洗い出す (v2.15)
  * ============================================================
  *  CleaningBoard と LatestOptions の「人が手で入れる列」を突き合わせ、
  *  つじつまの合わない行を 指摘事項 シートに書き出す。
  *  バッチの最後に走る。
  *
- *  ★同じ内容の行は重複させない。
- *    5列すべて (キー/シート/日付/階/矛盾点) が一致する行が
- *    すでにあれば追記しない。
+ *  ★指摘事項シートの列 (6列):
+ *      A プライマリキー … 指摘1件を一意に表す。元行のキー + ルールID
+ *      B 論理削除       … 空欄 = いま検出されている / 「削除」= 解消済み
+ *      C シート / D 日付 / E 階 / F 矛盾点
+ *
+ *  ★プライマリキーで突合する。重複行は作らない。
+ *    毎回こう更新する:
+ *      検出された  → 行が無ければ追記。あれば論理削除を空に戻す(復活)
+ *      検出されない → 論理削除に「削除」を立てる (行は消さない)
+ *    つまり「論理削除が空の行 = いま検出されている指摘」になる。
+ *    ルールを変えたときに古い指摘が残り続ける問題も、これで片付く。
  *
  *  ★対象は「今日の少し前から、先の予定まで」に限る。
  *    全期間を対象にすると過去の済んだ話で埋まって読めなくなる。
  *    範囲は CONFIG.ISSUE_CHECK の DAYS_BACK / DAYS_AHEAD で変える。
  *
- *  ★解決した指摘は自動では消えない。
- *    直したら行を手で削除する。まだ直っていなければ次のバッチで
- *    また出てくるので、消してしまっても取りこぼさない。
+ *  ★行は物理削除しない。他のシート (LatestOptions / LodgifyBookings)
+ *    と同じ、論理削除の考え方に揃えている。
  * ============================================================
  */
 
@@ -32,10 +39,12 @@ function checkConsistency() {
   }
 
   const issues = collectIssues();
-  const added = appendIssues(issues);
+  const r = syncIssues(issues);
 
-  dlog(`矛盾チェック: ${issues.length}件検出 / ${added}件を新規追記`);
-  return { found: issues.length, added: added };
+  dlog(`矛盾チェック: ${issues.length}件検出 / ` +
+       `新規${r.added} 復活${r.revived} 解消${r.deleted} / いま有効${r.active}`);
+  return { found: issues.length, added: r.added, revived: r.revived,
+           deleted: r.deleted, active: r.active };
 }
 
 /**
@@ -69,8 +78,13 @@ function collectIssues() {
   const to    = addDaysStr(today,  (K.DAYS_AHEAD == null ? 60 : K.DAYS_AHEAD));
 
   const out = [];
-  const add = (key, sheet, date, room, issue) =>
-    out.push({ key: key, sheet: sheet, date: date, room: room, issue: issue });
+  //  pk = 元行のキー + ルールID。これで指摘1件が一意になる。
+  //  同じ行に複数の指摘が出るため、元行のキーだけでは一意にならない。
+  const add = (rowKey, ruleId, sheet, date, room, issue) =>
+    out.push({
+      pk:    `${rowKey}#${ruleId}`,
+      sheet: sheet, date: date, room: room, issue: issue,
+    });
 
   const known = {};
   webKnownStaffNames().forEach(n => { known[n] = true; });
@@ -137,7 +151,7 @@ function collectIssues() {
               const span = (win.length === 1)
                 ? it.date
                 : `${win[0].date}〜${it.date}`;
-              add(it.key, 'CleaningBoard', it.date, room,
+              add(it.key, 'cleanGap', 'CleaningBoard', it.date, room,
                 `前の退室から到着まで清掃が1日も入っていない (${span}, ${win.length}日)`);
             }
           }
@@ -154,24 +168,25 @@ function collectIssues() {
 
       // 「なし」と明示した行は対象外。空欄のときだけ指摘する。
       if (on('kindMissing') && it.clean && it.kindBlank) {
-        add(it.key, 'CleaningBoard', it.date, room,
+        add(it.key, 'kindMissing', 'CleaningBoard', it.date, room,
           `清掃担当「${it.clean}」がいるのに種類が空欄`);
       }
       if (on('cleanerMissing') && it.kind && it.cleanBlank) {
-        add(it.key, 'CleaningBoard', it.date, room,
+        add(it.key, 'cleanerMissing', 'CleaningBoard', it.date, room,
           `種類が「${it.kind}」なのに清掃担当が空欄`);
       }
       if (on('nightMissing') && ARRIVE.indexOf(it.state) >= 0 && it.nightBlank) {
-        add(it.key, 'CleaningBoard', it.date, room, '到着日なのに接客担当が空欄');
+        add(it.key, 'nightMissing', 'CleaningBoard', it.date, room, '到着日なのに接客担当が空欄');
       }
       if (on('setsMismatch') && it.sets > 0 && it.ppl > 0 && it.sets !== it.ppl) {
-        add(it.key, 'CleaningBoard', it.date, room,
+        add(it.key, 'setsMismatch', 'CleaningBoard', it.date, room,
           `べ(${it.sets})と泊人(${it.ppl})が不一致`);
       }
       if (on('unknownStaff')) {
         [[it.clean, '清掃'], [it.night, '接客']].forEach(p => {
           if (p[0] && !known[p[0]]) {
-            add(it.key, 'CleaningBoard', it.date, room,
+            // 清掃と接客で2件出るため、ルールIDに役割を足して一意にする
+            add(it.key, `unknownStaff.${p[1]}`, 'CleaningBoard', it.date, room,
               `${p[1]}担当「${p[0]}」がStaffシートに無い`);
           }
         });
@@ -205,18 +220,26 @@ function collectIssues() {
     const name = String(row[O.GUEST_NAME - 1] || '').trim();
     const deleted = String(row[O.DELETED_FLAG - 1] || '').trim() === '削除';
     const done = String(row[O.HONAMIYA_DONE - 1] || '').trim();
-    const key = `${d}_${room}`;
+    //  同じ (日付, 階) に複数のフォーム回答があるため、氏名まで入れる。
+    //  (実例: 2026-09-18 1F に Ellen さんと Isidro さんの2件)
+    //  さらに同じ人が同じ日・同じ階に出し直すこともあるので、
+    //  フォーム送信日時まで入れてようやく一意になる。
+    //  (実例: 2026-08-24 1F の Simone Perissin さんが2回提出)
+    const sent = fmtDateTime(row[O.FORM_TS - 1]);
+    const key = sent
+      ? `${d}_${room}_${name}@${sent}`
+      : `${d}_${room}_${name}`;
 
     if (on('orderedButGone') && deleted && done === '済' && !optActive[`${d}|${room}`]) {
-      add(key, 'LatestOptions', d, room, `予約が消えたのに ほなみや転記済=済 (${name})`);
+      add(key, 'orderedButGone', 'LatestOptions', d, room, `予約が消えたのに ほなみや転記済=済 (${name})`);
     }
     if (deleted) return;
 
     if (on('mealNoStay') && covered[d] && room && !occupied[`${d}|${room}`]) {
-      add(key, 'LatestOptions', d, room, `食事予約があるが清掃ボードに在室が無い (${name})`);
+      add(key, 'mealNoStay', 'LatestOptions', d, room, `食事予約があるが清掃ボードに在室が無い (${name})`);
     }
     if (on('guestsMissing') && !numOrZero(row[O.GUESTS - 1])) {
-      add(key, 'LatestOptions', d, room, `人数が空欄 (${name})`);
+      add(key, 'guestsMissing', 'LatestOptions', d, room, `人数が空欄 (${name})`);
     }
   });
 
@@ -224,72 +247,106 @@ function collectIssues() {
 }
 
 /**
- * 指摘事項シートに追記する。5列すべてが一致する行は追記しない。
- * @return {number} 追記した行数
+ * 指摘事項シートを検出結果に合わせて更新する。
+ *
+ *   検出された   → 行が無ければ追記。あれば論理削除を空に戻す (復活)
+ *   検出されない → 論理削除に「削除」を立てる (行は消さない)
+ *
+ * 突合はプライマリキーだけで行う。日付や文言の表記ゆれに左右されない。
+ * (以前は5列すべてを連結して比較していたが、シートに書いた日付が
+ *  日付値に変換されるため扱いが面倒だった)
+ *
+ * @return {{added:number, revived:number, deleted:number, active:number}}
  */
-function appendIssues(issues) {
+function syncIssues(issues) {
   const I = CONFIG.COL_ISSUE;
+  const W = I.ISSUE;                       // 列数 = 6
   const sh = ensureIssueSheet();
   const last = sh.getLastRow();
 
-  const seen = {};
-  if (last > 1) {
-    sh.getRange(2, 1, last - 1, 5).getValues().forEach(row => {
-      const k = issueKey(row[I.KEY - 1], row[I.SHEET - 1],
-                         row[I.DATE - 1], row[I.ROOM - 1], row[I.ISSUE - 1]);
-      if (k) seen[k] = true;
-    });
-  }
+  // 今回検出したもの (同一バッチ内でキーが重複したら先勝ち)
+  const found = {};
+  issues.forEach(it => { if (!found[it.pk]) found[it.pk] = it; });
 
-  const appends = [];
-  issues.forEach(it => {
-    const k = issueKey(it.key, it.sheet, it.date, it.room, it.issue);
-    if (!k || seen[k]) return;
-    seen[k] = true;                       // 同一バッチ内の重複も防ぐ
-    const row = new Array(5).fill('');
-    row[I.KEY - 1]   = it.key;
-    row[I.SHEET - 1] = it.sheet;
-    row[I.DATE - 1]  = it.date;
-    row[I.ROOM - 1]  = it.room;
-    row[I.ISSUE - 1] = it.issue;
-    appends.push(row);
+  const existing = (last > 1) ? sh.getRange(2, 1, last - 1, W).getValues() : [];
+  const res = { added: 0, revived: 0, deleted: 0, active: 0 };
+
+  const seen = {};
+  existing.forEach(row => {
+    const pk = String(row[I.KEY - 1] || '').trim();
+    if (!pk) return;
+    seen[pk] = true;
+    const wasDeleted = String(row[I.DELETED - 1] || '').trim() === '削除';
+
+    if (found[pk]) {
+      if (wasDeleted) { row[I.DELETED - 1] = ''; res.revived++; }   // 再発したので復活
+      res.active++;
+    } else if (!wasDeleted) {
+      row[I.DELETED - 1] = '削除';                                   // 解消したので論理削除
+      res.deleted++;
+    }
   });
 
-  if (appends.length) {
-    sh.getRange(sh.getLastRow() + 1, 1, appends.length, 5).setValues(appends);
-  }
-  return appends.length;
+  const appends = [];
+  Object.keys(found).forEach(pk => {
+    if (seen[pk]) return;
+    const it = found[pk];
+    const row = new Array(W).fill('');
+    row[I.KEY - 1]     = pk;
+    row[I.DELETED - 1] = '';
+    row[I.SHEET - 1]   = it.sheet;
+    row[I.DATE - 1]    = it.date;
+    row[I.ROOM - 1]    = it.room;
+    row[I.ISSUE - 1]   = it.issue;
+    appends.push(row);
+    res.added++; res.active++;
+  });
+
+  if (existing.length) sh.getRange(2, 1, existing.length, W).setValues(existing);
+  if (appends.length)  sh.getRange(existing.length + 2, 1, appends.length, W).setValues(appends);
+
+  return res;
 }
 
 /**
- * 重複判定のキー。5列を連結する。
- * 日付はシートに書くと日付値になるため、必ず fmtDate() を通してから
- * 比較する。文字列のまま比べると毎回別物と判定されて際限なく増える。
- */
-function issueKey(key, sheet, date, room, issue) {
-  const d = fmtDate(date) || String(date == null ? '' : date).trim();
-  const parts = [key, sheet, d, room, issue]
-    .map(v => String(v == null ? '' : v).trim());
-  if (!parts[4]) return '';            // 矛盾点が空の行は無視
-  return parts.join('\u0001');
-}
-
-/**
- * 指摘事項シートを用意する (無ければヘッダー付きで作成)
+ * 指摘事項シートを用意する。
+ *
+ * ★旧レイアウト (5列: 論理削除キー/シート/日付/階/矛盾点) を見つけたら
+ *   自動で移行する。A列の見出しを「プライマリキー」に直し、
+ *   その右に「論理削除」列を1本差し込む。
+ *   既存の行は消さない。次の実行で検出されなければ論理削除が立つ。
+ *   移行後にもう一度実行しても何も起きない (見出しで判定するため)。
  */
 function ensureIssueSheet() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const header = ['プライマリキー', '論理削除', 'シート', '日付', '階', '矛盾点'];
   let sh = ss.getSheetByName(CONFIG.SHEET.ISSUES);
-  if (sh) return sh;
 
-  sh = ss.insertSheet(CONFIG.SHEET.ISSUES);
-  const header = ['論理削除キー', 'シート', '日付', '階', '矛盾点'];
-  sh.getRange(1, 1, 1, header.length).setValues([header])
-    .setFontWeight('bold').setBackground('#e8eaed');
-  sh.setFrozenRows(1);
-  sh.setColumnWidth(1, 150);
-  sh.setColumnWidth(2, 120);
-  sh.setColumnWidth(5, 420);
+  if (!sh) {
+    sh = ss.insertSheet(CONFIG.SHEET.ISSUES);
+    sh.getRange(1, 1, 1, header.length).setValues([header])
+      .setFontWeight('bold').setBackground('#e8eaed');
+    sh.setFrozenRows(1);
+    sh.setColumnWidth(1, 220);
+    sh.setColumnWidth(2, 80);
+    sh.setColumnWidth(3, 120);
+    sh.setColumnWidth(6, 420);
+    return sh;
+  }
+
+  const width = Math.max(sh.getLastColumn(), 1);
+  const head = sh.getRange(1, 1, 1, width).getValues()[0]
+    .map(v => String(v == null ? '' : v).trim());
+
+  // 論理削除列がまだ無い = 旧レイアウト
+  if (head[1] !== '論理削除') {
+    sh.insertColumnAfter(1);
+    sh.getRange(1, 1, 1, header.length).setValues([header])
+      .setFontWeight('bold').setBackground('#e8eaed');
+    sh.setColumnWidth(1, 220);
+    sh.setColumnWidth(2, 80);
+    Logger.log('指摘事項シートを6列レイアウトへ移行しました (論理削除列を追加)。');
+  }
   return sh;
 }
 
