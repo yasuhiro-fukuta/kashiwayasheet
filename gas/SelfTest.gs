@@ -25,7 +25,7 @@ function selfTest() {
 
   const g = (typeof globalThis !== 'undefined') ? globalThis : this;
 
-  Logger.log('======== 柏屋 予約同期 v2.10.1 自己診断 ========');
+  Logger.log('======== 柏屋 予約同期 v2.14 自己診断 ========');
 
   // ── 1. ファイルが全部入っているか ──────────────────────────
   Logger.log('\n[1] 必要な関数が揃っているか');
@@ -37,6 +37,8 @@ function selfTest() {
     'lodgifyRowKey', 'syncLodgifyBookings',                      // LodgifyFetcher.gs
     'toHalfWidth', 'addDaysStr', 'numOrZero',                    // Utils.gs
     'loadCheckinFormEntries', 'applyCheckinFormStatus',           // CheckinForm.gs
+    'extractLodgifyAddons', 'lodgifyAddonSummaries',
+    'syncLodgifyMealOptions', 'lodgifyOptionMeta',                // LodgifyAddons.gs
     'syncOptions', 'runBatch', 'diagnoseLodgifyMatch',
   ];
   const missing = needed.filter(n => typeof g[n] !== 'function');
@@ -72,6 +74,10 @@ function selfTest() {
     ['syncLodgifyBookings',  'lodgifyRowKey(',            'LodgifyFetcher.gs'],
     ['numOrZero',            'toHalfWidth(',              'Utils.gs'],
     ['buildCleaningBoard',   'applyCheckinFormStatus',    'CleaningBoard.gs'],
+    ['syncOptions',          'syncLodgifyMealOptions(now',  'OptionSync.gs'],
+    ['optKey',               'lodgifyOptionMeta(row',       'OptionSync.gs'],
+    ['applyOptionsInfo',     'cur.meals.push(meal',         'CleaningBoard.gs'],
+    ['lodgifyItemToRow',     'C.ADDONS - 1',                'LodgifyFetcher.gs'],
   ];
   const stale = [];
   VERSION_MARKS.forEach(([fn, mark, file]) => {
@@ -143,6 +149,98 @@ function selfTest() {
     ? ok('isDirectLodgifySource の判定')
     : ng('isDirectLodgifySource の判定がおかしい');
 
+  // ── 3b. Lodgify 予約時オプション (アドオン) の解釈 ─────────────
+  //  実際のチェックアウト画面の表記でテストする:
+  //    "Dinner - Chicken Hot Pot for 3"  ¥8,000  x1
+  Logger.log('\n[3b] Lodgify アドオンの解釈');
+
+  eq('stripLodgifyAddonPrefix("Dinner - Chicken Hot Pot for 3")',
+     stripLodgifyAddonPrefix('Dinner - Chicken Hot Pot for 3'), 'Chicken Hot Pot for 3');
+  eq('stripLodgifyAddonPrefix("Dinner — Chicken Hot Pot for 2")',
+     stripLodgifyAddonPrefix('Dinner — Chicken Hot Pot for 2'), 'Chicken Hot Pot for 2');
+
+  //  CONFIG.MEALS は ^ 始まりなので、区分を落とさないと一致しない。
+  //  ここが壊れると「食事なのにオプション扱い」になり発注から漏れる。
+  const md = matchMealDefinition(stripLodgifyAddonPrefix('Dinner - Chicken Hot Pot for 3'));
+  eq('CONFIG.MEALS への一致', md && md.label, 'Chicken Hot Pot');
+
+  eq('parseAddonPortion("… for 3", x1)', parseAddonPortion('Dinner - Chicken Hot Pot for 3', 1), 3);
+  eq('parseAddonPortion("… for 2", x2)', parseAddonPortion('Dinner - Chicken Hot Pot for 2', 2), 4);
+  eq('parseAddonPortion(人前表記なし, x2)', parseAddonPortion('Late check-out', 2), 2);
+  eq('parseAddonPortion("２人前", x1)',     parseAddonPortion('Ochazuke Breakfast ２人前', 1), 2);
+
+  //  明示キー経由: 中身を問わず採用され、食事/オプションに振り分けられる
+  const sample = {
+    id: 999, status: 'booked', arrival: '2026-10-25', departure: '2026-10-26',
+    add_ons: [
+      { name: 'Dinner - Chicken Hot Pot for 3', quantity: 1, total: 8000 },
+      { name: 'Late check-out',                 quantity: 1, total: 2000 },
+    ],
+  };
+  const sAdd = extractLodgifyAddons(sample);
+  eq('extractLodgifyAddons (add_ons) の件数', sAdd.length, 2);
+  const sSum = lodgifyAddonSummaries(sAdd);
+  eq('食事サマリ',     sSum.meal,   'Chicken Hot Pot(3人前)');
+  eq('オプションサマリ', sSum.option, 'Late check-out');
+
+  //  同じ料理を2件頼まれたら人前を合算する (発注数を間違えないため)
+  const sum2 = lodgifyAddonSummaries(extractLodgifyAddons({
+    add_ons: [
+      { name: 'Dinner - Chicken Hot Pot for 2', quantity: 1, total: 6000 },
+      { name: 'Dinner - Chicken Hot Pot for 3', quantity: 1, total: 8000 },
+    ],
+  }));
+  eq('同じ料理は人前を合算', sum2.meal, 'Chicken Hot Pot(5人前)');
+
+  //  キー名の綴りが違う (Add-Ons / addOns) 場合も拾えること
+  eq('キー名の綴り違い (Add-Ons)',
+     extractLodgifyAddons({ 'Add-Ons': [{ Name: 'Dinner - Shabu-Shabu for 2', Quantity: 1 }] }).length, 1);
+
+  //  再帰走査の経路: 食事名に一致した物だけ採用し、
+  //  料率明細などを誤ってアドオンにしないこと
+  const scanned = extractLodgifyAddons({
+    rooms: [{
+      room_type_id: 793801,
+      rate_details: [{ name: 'Nightly rate', price: 27500 }],
+      upsells:      [{ name: 'Dinner - Wagyu Sukiyaki for 2', quantity: 1, price: 9000 }],
+    }],
+  });
+  eq('再帰走査で拾えた件数', scanned.length, 1);
+  eq('再帰走査で拾った中身', scanned.length ? scanned[0].mealLabel : '', 'Wagyu Sukiyaki');
+
+  //  複数部屋の予約ではアドオンを先頭の部屋にだけ載せる (二重発注の防止)
+  const twoRooms = normalizeLodgifyBooking({
+    id: 998, status: 'booked', arrival: '2026-10-25', departure: '2026-10-26',
+    add_ons: [{ name: 'Dinner - Chicken Hot Pot for 3', quantity: 1, total: 8000 }],
+    rooms: [
+      { room_type_id: 793793, people: 2, name: '1F' },
+      { room_type_id: 793801, people: 2, name: '2F' },
+    ],
+  }, {});
+  (twoRooms.length === 2 && twoRooms[0].addons.length === 1 && twoRooms[1].addons.length === 0)
+    ? ok('複数部屋の予約でもアドオンは1部屋分だけ')
+    : ng(`複数部屋でアドオンが重複している: ` +
+         twoRooms.map(r => `${r.room}=${(r.addons || []).length}`).join(' / '));
+
+  //  出所の判定。フォーム行とアドオン行が重複排除で殺し合わないこと
+  const O = CONFIG.COL_OPT;
+  const ldgRow = new Array(11).fill('');
+  ldgRow[O.CHECKIN - 1]   = new Date(2026, 9, 25);
+  ldgRow[O.ROOM - 1]      = '2F';
+  ldgRow[O.GUEST_NAME - 1] = 'Yamada Taro';
+  ldgRow[O.FORM_JSON - 1] = JSON.stringify({ _source: 'lodgify', _booking_id: '12345', _room_raw: '793801' });
+  const formRow = ldgRow.slice();
+  formRow[O.FORM_JSON - 1] = JSON.stringify({ 'Check-in date': '2026-10-25' });
+
+  const mt = lodgifyOptionMeta(ldgRow);
+  eq('lodgifyOptionMeta のキー', mt && mt.key, '12345|793801');
+  (lodgifyOptionMeta(formRow) === null)
+    ? ok('フォーム行は Lodgify 由来と誤判定されない')
+    : ng('フォーム行が Lodgify 由来と誤判定されている');
+  (optKey(ldgRow) !== optKey(formRow))
+    ? ok(`出所で重複排除キーが分かれている ("${optKey(ldgRow)}" / "${optKey(formRow)}")`)
+    : ng('重複排除キーが同じ → フォーム行とアドオン行が互いを消し合う');
+
   // ── 4. シートが揃っているか ────────────────────────────────
   Logger.log('\n[4] シートの存在');
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -169,6 +267,39 @@ function selfTest() {
     const noPeople = bookings.filter(b => !b.people).length;
     noPeople ? warn(`人数が 0 の行が ${noPeople} 件`)
              : ok('全行に人数が入っている');
+  }
+
+  // ── 5b. 予約時オプションの取り込み状況 ─────────────────────
+  Logger.log('\n[5b] Lodgify 予約時オプション (アドオン)');
+  try {
+    const desired = collectLodgifyOptionRows();
+    if (!desired.length) {
+      warn('アドオン付きの予約が 0 件。' +
+           'Lodgify で実際に頼まれているなら「🍱 Lodgify アドオン確認」' +
+           '(dumpLodgifyAddons) でフィールド名を確認してください。');
+    } else {
+      ok(`アドオン付き ${desired.length} 件`);
+      desired.forEach(d => Logger.log(
+        `       ${fmtDate(d.row[CONFIG.COL_OPT.CHECKIN - 1])} ${d.row[CONFIG.COL_OPT.ROOM - 1]} ` +
+        `${d.row[CONFIG.COL_OPT.GUEST_NAME - 1]} 食事="${d.row[CONFIG.COL_OPT.MEAL_SUMMARY - 1]}" ` +
+        `opt="${d.row[CONFIG.COL_OPT.OPT_SUMMARY - 1]}"`));
+    }
+
+    // LatestOptions に既に入っているアドオン行
+    const optSh = getSheet(CONFIG.SHEET.LATEST_OPT);
+    const lastOpt = optSh.getLastRow();
+    if (lastOpt > 1) {
+      const ov = optSh.getRange(2, 1, lastOpt - 1, 11).getValues();
+      const ldgRows = ov.filter(r => lodgifyOptionMeta(r));
+      const alive = ldgRows.filter(r => r[CONFIG.COL_OPT.DELETED_FLAG - 1] !== '削除');
+      ok(`食事予約表のアドオン由来行: 有効 ${alive.length} / 削除済み ${ldgRows.length - alive.length}`);
+      if (desired.length && !ldgRows.length) {
+        ng('アドオン付き予約があるのに食事予約表に行が無い → ' +
+           '「🍱 Lodgifyアドオン→食事表に反映」を実行してください');
+      }
+    }
+  } catch (e) {
+    ng(`アドオンの確認に失敗: ${e.message || e}`);
   }
 
   // ── 6. 直予約が清掃ボードに載るか (メモリ上で再現。書き込まない) ──

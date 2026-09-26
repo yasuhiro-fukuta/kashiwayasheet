@@ -1,4 +1,4 @@
-# 柏屋 予約同期 (Kashiwaya Reservation Sync) v2.10
+# 柏屋 予約同期 (Kashiwaya Reservation Sync) v2.14
 
 Google スプレッドシート + Apps Script。Booking.com / Airbnb の iCal、
 Lodgify Public API、Google フォームから宿泊者情報を集め、
@@ -82,6 +82,7 @@ iCal が押さえていない「夜」だけを拾って骨格に合流させる
 | `IcalFetcher.gs` | Booking.com / Airbnb の iCal 取得とパース |
 | `ReservationSync.gs` | 予約同期と消失(キャンセル)検知 |
 | `LodgifyFetcher.gs` | Lodgify Public API v2 の取得と `LodgifyBookings` への upsert |
+| `LodgifyAddons.gs` | **Lodgify 予約時オプション(アドオン)の取込** (v2.14 新規) |
 | `OptionSync.gs` | フォーム回答の取込、食事/オプションサマリ生成 |
 | `GuestCount.gs` | **人数解決の共通ロジック** (v2.10 新規) |
 | `CleaningBoard.gs` | 清掃予定表の生成 |
@@ -171,12 +172,115 @@ v2.10.3 で `CheckinForm.gs` を新設し後者を見るように直した。
 | `dumpCheckinForm()` | Check-In Form が読めているかの確認。**書き込みなし** |
 | `explainRedKeys()` | E列の赤字の出どころを特定する。**書き込みなし** |
 | `runConsistencyCheckOnly()` | 手動列の矛盾チェック。指摘事項シートに追記する |
+| `dumpLodgifyAddons()` | **予約時オプションが API のどこに入っているかを確認する。書き込みなし** |
+| `runLodgifyAddonSyncOnly()` | 予約時オプション → 食事予約表 の反映だけを実行する |
 
 `selfTest` の **[1b]** は `Function.prototype.toString()` で関数のソースを見て、
 新版の目印 (呼び出しの形) が含まれるかを判定する。
 これが無かったため「selfTest は全部OKなのに清掃ボードが書き換わらない」を
 一度取りこぼした。旧ファイルが残って同名関数を後勝ちで上書きしている場合、
 [1] の存在チェックだけでは検出できない。
+
+---
+
+## Lodgify 予約時オプション (アドオン) — v2.14
+
+Lodgify のチェックアウト画面で食事を売り始めた。
+
+```
+Dinner - Chicken Hot Pot for 2   ¥6,000
+Dinner - Chicken Hot Pot for 3   ¥8,000    ← "x1" で ¥8,000 / 1滞在あたり
+```
+
+これまで食事の注文経路は GoogleForm だけだったので、
+Lodgify で頼まれた食事は誰も気付かないまま当日を迎えてしまう。
+
+### 何をしているか
+
+GoogleForm の食事オプションと**同じ扱い**にしている。
+つまり `LatestOptions` (食事予約表) に行を作る。
+ここに乗れば既存の経路がそのまま効く:
+
+- ほなみやへの発注一覧 (この表がそのまま発注元)
+- `applyOptionsInfo()` 経由で CleaningBoard の食事列 (R) にも出る
+- 条件付き書式・曜日数式・並べ替えも共通
+
+```
+Lodgify API ─ syncLodgifyBookings()      → LodgifyBookings T列 (予約時オプションJSON)
+            └ syncLodgifyMealOptions()   → LatestOptions に1行 (フォーム行と同じ形)
+                                         → buildCleaningBoard() で食事列に反映
+```
+
+| 列 | 入る値 |
+|---|---|
+| C 送信日時 | 初回取得日時 (注文日時のかわり。毎バッチ変わらないので行が揺れない) |
+| D 宿泊日 | チェックイン日 |
+| E 部屋 | 1F / 2F |
+| F 宿泊者名 | Lodgify の宿泊者名 |
+| G 人数 | Lodgify の人数 (空なら `backfillOptionGuests()` が後で埋める) |
+| H 食事サマリ | `Chicken Hot Pot(3人前)` — フォーム由来と同じ書式 |
+| I オプションサマリ | 食事以外のアドオン (`Late check-out` など) |
+| J その他要望 | `Lodgify予約時オプション` (出所タグ) |
+| K 原文JSON | `{"_source":"lodgify","_booking_id":…,"addons":[…]}` |
+| L ほなみや転記済 | **書かない** (手動列) |
+
+### 気を付けた点
+
+- **フォーム行と殺し合わせない。**
+  `markOlderAsResubmitted()` は (宿泊日, 部屋, 宿泊者名) が同じ古い行を
+  「削除」にする。素で入れると
+  「Lodgifyで夕食 + フォームで朝食」を頼んだ客のフォーム行が毎バッチ消える。
+  → `optKey()` を出所込みにした。アドオン行は予約IDまでキーに含めるので、
+  こちらの重複排除は一切触らない。生死は `syncLodgifyMealOptions()` の
+  upsert が予約IDで管理する。
+- **列を増やしていない。**
+  出所は K列 (原文JSON) の `_source` に入れた。列を足すと L列
+  「ほなみや転記済」と M列の曜日数式がずれる。
+- **清掃ボードの食事列は合算するようにした。**
+  `applyOptionsInfo()` は (宿泊日, 部屋) ごとに最新1行だけを採っていた。
+  Lodgify で夕食・フォームで朝食のように生きている行が2つある場合、
+  片方の注文が食事列から消える。→ 食事・オプション・要望は合算する。
+  実データ127滞在で旧実装と差分0件 (合算が効くのは複数行あるときだけ)。
+- **1予約で2部屋のときはアドオンを先頭の部屋にだけ載せる。**
+  どちらの部屋の食事かは API からは判らない。両方に載せると二重発注になる。
+  該当時はログに出すので `CleaningOverride` で調整する。
+- **人前は `for N` × 個数。**
+  `Dinner - Chicken Hot Pot for 3` x1 → 3人前 / `for 2` x2 → 4人前。
+  同じ料理が2件あれば人前を合算する (`for 2` + `for 3` → 5人前)。
+- **内容が変わっていない行は1セルも書かない。** A列の更新日時が揺れない。
+- **消えたアドオンは論理削除。** 物理削除しないので過去実績が残る。
+  再び現れたら「削除」を外して復活させる。
+
+### ★フィールド名が未確定
+
+Lodgify の公開ドキュメントにアドオンの項目が無く、
+実レスポンスで確かめる以外の確認手段が無かった。
+そのため取り出しは2段構えにしている (`CONFIG.LODGIFY.ADDONS`)。
+
+1. `KEYS` に挙げた名前の配列 (`add_ons` / `addons` / `addOns` /
+   `booking_add_ons` / `add_on_items` / `extras`) があれば**無条件に採用**。
+   ネストしていても拾う。キー名の綴り・大文字小文字・区切り文字は無視する。
+2. 無ければ JSON を再帰走査し、「名前らしき文字列 + 個数か金額」を持つ物を
+   候補にする。ただし**食事名に一致した候補しか採用しない**
+   (料率明細・税・入金を誤ってアドオンにしないため)。
+
+**最初にやること: メニュー「🍱 Lodgify アドオン確認」(`dumpLodgifyAddons`)。**
+ログに次が出る。
+
+- booking のトップレベルキーと `rooms[]` のキーの一覧
+- アドオンを持つ予約と、その取り出し経路 (`KEYS:` か `SCAN:` か)
+- 1件も取れなかった場合は生JSONの先頭4000字
+
+`SCAN:` で拾っていたら、出ているパス名の配列名を
+`CONFIG.LODGIFY.ADDONS.KEYS` に足すこと。1) の経路に変わり、
+食事以外のアドオンも取りこぼさなくなる。
+
+0件だった場合はリスト取得のレスポンスにアドオンが含まれていない。
+Lodgify サポートに
+「`GET /v2/reservations/bookings` のレスポンスにアドオンを含める
+パラメータはあるか」を確認する
+(`stayFilter` のときと同じで、綴りを誤ると黙って既定に落ちる仕様なので
+返答の表記に厳密に合わせること)。
 
 ---
 
@@ -189,3 +293,7 @@ v2.10.3 で `CheckinForm.gs` を新設し後者を見るように直した。
   日付とずれるので変更しないこと。
 - 清掃ボードは毎バッチ E列以降を全消しして書き直す。
   手入力は必ず A〜D列か `CleaningOverride` 側に行うこと。
+- Lodgify 予約時オプションのフィールド名は**実レスポンス未確認**。
+  まず `dumpLodgifyAddons()` を実行して確認すること (上記参照)。
+- 1予約で2部屋押さえた予約のアドオンは先頭の部屋にだけ載る。
+  どちらの部屋の食事かは API から判らないため。

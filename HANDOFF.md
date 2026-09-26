@@ -24,9 +24,9 @@ Booking.com / Airbnb の iCal、Lodgify API、Google フォーム2種から情�
 | **CleaningBoard** | 日付×部屋の清掃・接客予定。**主役** | A〜D・U・V＝人 / E〜T＝バッチ |
 | **特** | 特別清掃のタスク表 | 人（バッチは読むだけ） |
 | **Staff** | 担当者一覧 | バッチが追記 / 表示名は人が編集 |
-| LatestOptions | 食事予約表（フォーム由来） | バッチ |
+| LatestOptions | 食事予約表（フォーム由来 **＋ Lodgify 予約時オプション**） | バッチ |
 | FormResponses | 食事・オプション注文フォームの生回答 | フォーム |
-| LodgifyBookings | Lodgify API の取得結果（人数の出どころ） | バッチ |
+| LodgifyBookings | Lodgify API の取得結果（人数の出どころ。T列に予約時オプション） | バッチ |
 | LatestReservations | iCal 由来の在室（1泊1行） | バッチ |
 | CleaningOverride | 人数の手動上書き | 人 |
 | PrevReservations / DisappearedRes | キャンセル検知用 | バッチ |
@@ -132,6 +132,18 @@ Booking.com / Airbnb の iCal、Lodgify API、Google フォーム2種から情�
 
 実際にこれを取り違えて、一度バグを作り込んでいる。
 
+### ★食事の注文経路は2つある（v2.14 から）
+| 経路 | 注文のされ方 | LatestOptions での見分け方 |
+|---|---|---|
+| GoogleForm | 予約後にフォームで注文 | J列（その他要望）が空、K列に設問文のJSON |
+| **Lodgify 予約時オプション** | 予約時のチェックアウト画面で購入 | **J列に `Lodgify予約時オプション`**、K列に `"_source":"lodgify"` |
+
+どちらも同じ表・同じ書式（`Chicken Hot Pot(3人前)`）で入る。
+**同じ客が両方使うことがある**（Lodgifyで夕食・フォームで朝食）。
+その場合 LatestOptions には**生きている行が2行**でき、
+CleaningBoard の食事列には `A / B` のように両方が出る。
+片方を「再提出だから古い」と解釈してはいけない。
+
 ### ★CleaningBoard の E〜T列は毎時上書きされる
 バッチが全消しして書き直す。**人が書いてよいのは A〜D 列と U・V 列だけ。**
 E〜T列に手で書いても消える。
@@ -152,7 +164,8 @@ iCal に現れない。Lodgify API からしか取れない。S列に「直予�
 
 1. iCal 取得（Booking.com / Airbnb）→ LatestReservations、消えた予約を検知
 2. **Lodgify API 取得** → LodgifyBookings（人数と直予約の唯一の出どころ）
-3. フォーム同期 → LatestOptions（人数の空欄を Lodgify から補完）
+3. フォーム同期 → LatestOptions
+   （**Lodgify 予約時オプションもここで同じ表に入る** → 人数の空欄を Lodgify から補完）
 4. 担当者一覧 → Staff に追記
 5. **CleaningBoard 生成**（iCal の骨格に Lodgify 直予約を合流 → 人数・氏名・食事を載せる）
 
@@ -178,6 +191,7 @@ GitHub **`yasuhiro-fukuta/kashiwayasheet`**（`main` ブランチ）。
 | `dumpCheckinForm()` | 宿泊者名簿フォームが読めているか |
 | `explainRedKeys()` | E列の赤字の出どころ |
 | `listPendingCheckinForms()` | 宿泊者名簿の未提出者 |
+| `dumpLodgifyAddons()` | Lodgify 予約時オプションが API のどこに入っているか |
 
 ---
 
@@ -190,6 +204,14 @@ GitHub **`yasuhiro-fukuta/kashiwayasheet`**（`main` ブランチ）。
 - `2026-10-14 1F` の人数が不明。Airbnb 経由で Lodgify に入らないため、
   `CleaningOverride` に手で1行足すしかない。
 - `CleaningBoard` の可読性（列が22本あり横スクロールが必要）。これが今回の発端。
+- **Lodgify 予約時オプションのフィールド名が実レスポンス未確認。**
+  公開ドキュメントにアドオンの項目が無いため、コードは
+  「既知のキー名 → 無ければ食事名で再帰走査」の2段構えにしてある。
+  Apps Script で `dumpLodgifyAddons()` を1回実行し、ログの
+  「取り出し経路」が `SCAN:` なら、出ているパス名を
+  `CONFIG.LODGIFY.ADDONS.KEYS` に足すこと。0件なら
+  リスト取得のレスポンスにアドオンが入っていないので Lodgify サポートに確認。
+  詳細は [`gas/README.md`](gas/README.md) の「Lodgify 予約時オプション」。
 
 ---
 

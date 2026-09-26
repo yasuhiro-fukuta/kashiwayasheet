@@ -36,6 +36,22 @@ function syncOptions(now, prevProcessedAt, disappeared) {
   const resubmitMarked = markOlderAsResubmitted(optSh, now);
   dlog(`Marked as resubmitted (old rows deleted): ${resubmitMarked.length} rows`);
 
+  //  ★Lodgify の予約時オプション (アドオン) をここで同じ表に入れる。
+  //    フォームの食事オプションと同じ扱いにするため、行の作りも同じ。
+  //
+  //    ・markOlderAsResubmitted() の後に呼ぶ。
+  //      アドオン行の生死は upsert 側 (syncLodgifyMealOptions) が
+  //      予約IDで管理しており、送信日時での重複排除にかけたくない。
+  //    ・並べ替えの前に呼ぶ。追記した行が宿泊日順に収まる。
+  //    ・失敗しても既存のフォーム取込は成立させる。
+  try {
+    const la = syncLodgifyMealOptions(now);
+    dlog(`Lodgify アドオン: +${la.inserted} / ~${la.updated} ` +
+         `(復活 ${la.revived}) / -${la.deleted}`);
+  } catch (e) {
+    Logger.log(`Lodgify アドオンの取込に失敗 (処理は続行): ${e.stack || e}`);
+  }
+
   // 並べ替えは touched 読み取りの前に行う (rowIndex を確定させるため)
   sortOptionsByCheckin(optSh);
 
@@ -439,13 +455,29 @@ function markOlderAsResubmitted(optSh, now) {
   return marked;
 }
 
+/**
+ * 重複排除 (markOlderAsResubmitted) 用のキー。
+ *
+ * ★出所で分ける。
+ *   同じ客が「Lodgifyで夕食」「フォームで朝食」を別々に頼むことがある。
+ *   出所を見ずに (宿泊日, 部屋, 宿泊者名) だけで比べると、
+ *   後から書かれた側が先の側を「再提出」と見なして消してしまう。
+ *
+ * ★Lodgify アドオン由来の行は予約IDまでキーに含める。
+ *   この表での生死は syncLodgifyMealOptions() の upsert が
+ *   予約IDで管理している。こちらの重複排除は一切触らせない。
+ */
 function optKey(row) {
   const C = CONFIG.COL_OPT;
+
+  const meta = lodgifyOptionMeta(row);
+  if (meta) return `lodgify|${meta.key}`;
+
   const d = fmtDate(row[C.CHECKIN - 1]);
   const r = row[C.ROOM - 1];
   const n = (row[C.GUEST_NAME - 1] || '').toString().trim().toLowerCase();
   if (!d || !r || !n) return '';
-  return `${d}|${r}|${n}`;
+  return `form|${d}|${r}|${n}`;
 }
 
 function readTouchedRows(optSh, now) {

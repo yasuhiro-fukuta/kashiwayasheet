@@ -176,8 +176,12 @@ const CONFIG = {
     AMOUNT:       16,
     CURRENCY:     17,
     RAW_JSON:     18,
-    NOTE:         19,
+    NOTE:         19,   // ★手書き。バッチで消さない
+    ADDONS:       20,   // 予約時オプション(アドオン)の JSON。v2.14 で追加
   },
+
+  // LodgifyBookings の列数。ensureLodgifySheet / upsert の書き込み幅。
+  LDG_WIDTH: 20,
 
   // ── CleaningBoard の列 ────────────────────────────────────
   //  日付 × 部屋 で1行。
@@ -283,6 +287,81 @@ const CONFIG = {
       'website',
       'manual',
     ],
+
+    // ── 予約時オプション (Lodgify Add-ons) ────────────────────
+    //  Lodgify のチェックアウト画面で売っている追加商品。
+    //  例) "Dinner - Chicken Hot Pot for 3" ¥8,000 x1
+    //
+    //  ★これを GoogleForm の食事オプションと同じ扱いにする。
+    //    = LatestOptions (食事予約表) に行を作る。
+    //      そこに乗れば CleaningBoard の食事列にも自動で出る。
+    //
+    //  ★フィールド名が確定できていない。
+    //    Lodgify の API リファレンスは公開ドキュメントに
+    //    アドオンの項目が載っておらず、実レスポンスで確かめる以外に
+    //    確認手段が無い。そのため次の2段構えにしている:
+    //
+    //      1) KEYS に挙げた名前の配列があればそれを採用する (無条件)
+    //      2) 無ければ JSON を再帰的に走査し、
+    //         「名前らしき文字列 + 個数か金額」を持つ物を候補にする。
+    //         ただし候補は CONFIG.MEALS か MEAL_HINTS に一致した物だけ
+    //         採用する (誤検出を出さないため)。
+    //
+    //    実レスポンスを見たら KEYS の先頭に正しい名前を足すこと。
+    //    確認は メニュー「🍱 Lodgify アドオン確認」(dumpLodgifyAddons)。
+    ADDONS: {
+      ENABLED: true,
+
+      // 1) 無条件に採用するキー名 (アドオン専用の名前だけを並べる)
+      KEYS: [
+        'add_ons', 'addons', 'addOns',
+        'booking_add_ons', 'bookingAddOns', 'add_on_items',
+        'extras',
+      ],
+
+      // 2) 再帰走査を行うか
+      SCAN_FALLBACK: true,
+      // 再帰走査で降りない枝 (料率・税・入金などの明細)
+      SCAN_SKIP_KEYS: [
+        'rate_details', 'rates', 'taxes', 'fees', 'transactions',
+        'payments', 'promotions', 'messages', 'guest_breakdown',
+        'currency', 'guest', 'owner', 'policies',
+      ],
+      SCAN_MAX_DEPTH: 6,
+
+      // アドオン1件から名前 / 個数 / 金額を読むときの候補キー
+      NAME_KEYS:  ['name', 'title', 'add_on_name', 'product_name', 'label', 'description', 'text'],
+      QTY_KEYS:   ['quantity', 'qty', 'units', 'count', 'number', 'amount_of_units'],
+      PRICE_KEYS: ['total', 'total_amount', 'subtotal', 'price', 'amount'],
+
+      //  "Dinner - Chicken Hot Pot for 3" の先頭の区分を落とす。
+      //  これを落とさないと CONFIG.MEALS の ^ 始まりの正規表現に
+      //  一致しない。
+      STRIP_PREFIX: /^\s*(?:dinner|breakfast|lunch|brunch|supper|meal|food|option|add[-\s]?on|夕食|朝食|昼食|食事|オプション)\s*[-–—:：/|]+\s*/i,
+
+      //  人前の読み取り。"for 3" / "3 persons" / "3人前" を拾う。
+      //  parsePersonCount() が拾えない "for 3" 形式を先に見る。
+      PORTION_PATTERNS: [
+        /\bfor\s+(\d+)\b/i,
+        /(\d+)\s*(?:persons?|people|pax|servings?)\b/i,
+      ],
+
+      //  再帰走査で拾った候補を「食事」と見なす追加ヒント。
+      //  CONFIG.MEALS に無いが食事であるもの (新メニュー等) を
+      //  取りこぼさないための保険。
+      MEAL_HINTS: [
+        /dinner/i, /breakfast/i, /hot\s*pot/i, /shabu/i, /sukiyaki/i,
+        /chirashi/i, /ochazuke/i, /夕食/, /朝食/, /鍋/,
+      ],
+
+      //  食事以外のアドオン (レイトチェックアウト等) を
+      //  オプションサマリ (I列) に出すか。
+      NON_MEAL_TO_OPTION: true,
+
+      //  LatestOptions の その他要望 (J列) に入れる出所タグ。
+      //  女将が「フォームを探しても無い」で迷わないようにする。
+      ORIGIN_TAG: 'Lodgify予約時オプション',
+    },
   },
 
   // ── 清掃ボード生成設定 ─────────────────────────────────────

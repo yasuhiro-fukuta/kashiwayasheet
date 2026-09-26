@@ -345,18 +345,51 @@ function applyOptionsInfo(stays) {
     const ts = toDate(row[C.FORM_TS - 1]);
     const tsMs = (ts && !isNaN(ts.getTime())) ? ts.getTime() : 0;
 
-    if (!latest[key] || tsMs >= latest[key].tsMs) {
+    const meal  = String(row[C.MEAL_SUMMARY - 1] || '').trim();
+    const opt   = String(row[C.OPT_SUMMARY - 1] || '').trim();
+    const other = String(row[C.OTHER_REQ - 1] || '').trim();
+
+    if (!latest[key]) {
       latest[key] = {
-        tsMs:   tsMs,
+        tsMs:   -1,
         date:   d,
         room:   room,
-        name:   String(row[C.GUEST_NAME - 1] || '').trim(),
-        people: numOrZero(row[C.GUESTS - 1]),
-        meal:   String(row[C.MEAL_SUMMARY - 1] || '').trim(),
-        opt:    String(row[C.OPT_SUMMARY - 1] || '').trim(),
-        other:  String(row[C.OTHER_REQ - 1] || '').trim(),
+        name:   '',
+        people: 0,
+        meals:  [],
+        opts:   [],
+        others: [],
       };
     }
+    const cur = latest[key];
+
+    //  ★食事・オプション・要望は「合算」する。
+    //    同じ滞在に対して生きている行が複数あることがある:
+    //      ・Lodgify の予約時オプションで夕食
+    //      ・GoogleForm で朝食
+    //    最新の1行だけを採ると、もう一方の注文が食事列から消える。
+    //    再提出による古い行は markOlderAsResubmitted() が既に
+    //    「削除」にしているので、ここに残るのは別々の注文だけ。
+    if (meal  && cur.meals.indexOf(meal)   < 0) cur.meals.push(meal);
+    if (opt   && cur.opts.indexOf(opt)     < 0) cur.opts.push(opt);
+    if (other && cur.others.indexOf(other) < 0) cur.others.push(other);
+
+    // 名前と人数は最新の行を採る (合算すると意味が壊れる)
+    if (tsMs >= cur.tsMs) {
+      cur.tsMs = tsMs;
+      const nm = String(row[C.GUEST_NAME - 1] || '').trim();
+      const pp = numOrZero(row[C.GUESTS - 1]);
+      if (nm) cur.name = nm;
+      if (pp > 0) cur.people = pp;
+    }
+  });
+
+  // 合算した配列を1本の文字列にまとめる
+  Object.keys(latest).forEach(k => {
+    const v = latest[k];
+    v.meal  = v.meals.join(' / ');
+    v.opt   = v.opts.join(', ');
+    v.other = v.others.join(' / ');
   });
 
   stays.forEach(s => {

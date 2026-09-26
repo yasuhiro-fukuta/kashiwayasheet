@@ -81,7 +81,7 @@ function syncLodgifyBookings(now) {
 
   const sh = ensureLodgifySheet();
   const C = CONFIG.COL_LDG;
-  const width = 19;
+  const width = CONFIG.LDG_WIDTH;
 
   const last = sh.getLastRow();
   const existing = (last > 1) ? sh.getRange(2, 1, last - 1, width).getValues() : [];
@@ -259,7 +259,21 @@ function normalizeLodgifyBooking(b, skipped) {
     rooms = [{ room_type_id: b.property_id, people: b.people, name: b.property_name }];
   }
 
-  return rooms.map(rm => {
+  //  予約時オプション (アドオン) は予約単位で、部屋単位ではない。
+  //  1予約で2部屋押さえている場合にどちらの部屋の食事かは判らないので、
+  //  先頭の部屋の行だけに載せる。両方に載せると食事が二重に発注される。
+  let addons = [];
+  try {
+    addons = extractLodgifyAddons(b);
+  } catch (e) {
+    Logger.log(`アドオンの取り出しに失敗 (処理は続行) id=${b.id}: ${e.stack || e}`);
+  }
+  if (addons.length && rooms.length > 1) {
+    Logger.log(`アドオン付きの予約が複数部屋 (id=${b.id}, ${rooms.length}部屋)。` +
+               `先頭の部屋に載せた。CleaningOverride で調整が必要かもしれない。`);
+  }
+
+  return rooms.map((rm, roomIdx) => {
     const bd       = rm.guest_breakdown || {};
     const adults   = numOrZero(bd.adults);
     const children = numOrZero(bd.children);
@@ -284,6 +298,7 @@ function normalizeLodgifyBooking(b, skipped) {
       source:    src,
       amount:    numOrZero(b.total_amount || b.total),
       currency:  b.currency_code || '',
+      addons:    (roomIdx === 0) ? addons : [],
       raw:       JSON.stringify(b).substring(0, 4000),
     };
   });
@@ -312,7 +327,7 @@ function resolveLodgifyRoom(rm, b) {
  */
 function lodgifyItemToRow(it, fetchedAt, firstSeen) {
   const C = CONFIG.COL_LDG;
-  const row = new Array(19).fill('');
+  const row = new Array(CONFIG.LDG_WIDTH).fill('');
 
   row[C.FETCHED_AT - 1]   = fetchedAt;
   row[C.FIRST_SEEN - 1]   = firstSeen;
@@ -333,6 +348,8 @@ function lodgifyItemToRow(it, fetchedAt, firstSeen) {
   row[C.CURRENCY - 1]     = it.currency;
   row[C.RAW_JSON - 1]     = it.raw;
   row[C.NOTE - 1]         = '';
+  row[C.ADDONS - 1]       = (it.addons && it.addons.length)
+    ? JSON.stringify(it.addons) : '';
 
   return row;
 }
@@ -340,22 +357,49 @@ function lodgifyItemToRow(it, fetchedAt, firstSeen) {
 /**
  * LodgifyBookings シートを用意する (無ければヘッダー付きで作成)
  */
+const LODGIFY_HEADER = [
+  '最終取得日時', '初回取得日時', '論理削除フラグ', '予約ID', 'ステータス',
+  '部屋', '部屋(生値)', '宿泊者名', '人数', '大人', '子供',
+  'チェックイン', 'チェックアウト', '泊数', '予約元',
+  '金額', '通貨', '原文JSON', '備考(手動)', '予約時オプションJSON',
+];
+
 function ensureLodgifySheet() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   let sh = ss.getSheetByName(CONFIG.SHEET.LODGIFY);
-  if (sh) return sh;
+  if (sh) return migrateLodgifySheet(sh);
 
   sh = ss.insertSheet(CONFIG.SHEET.LODGIFY);
-  const header = [
-    '最終取得日時', '初回取得日時', '論理削除フラグ', '予約ID', 'ステータス',
-    '部屋', '部屋(生値)', '宿泊者名', '人数', '大人', '子供',
-    'チェックイン', 'チェックアウト', '泊数', '予約元',
-    '金額', '通貨', '原文JSON', '備考(手動)',
-  ];
-  sh.getRange(1, 1, 1, header.length).setValues([header])
+  sh.getRange(1, 1, 1, LODGIFY_HEADER.length).setValues([LODGIFY_HEADER])
     .setFontWeight('bold').setBackground('#e8eaed');
   sh.setFrozenRows(1);
   sh.setColumnWidth(CONFIG.COL_LDG.RAW_JSON, 60);
+  sh.setColumnWidth(CONFIG.COL_LDG.ADDONS, 60);
+  return sh;
+}
+
+/**
+ * 既存の LodgifyBookings に足りない列の見出しを補う。
+ *
+ * v2.14 で T列「予約時オプションJSON」を足した。
+ * 19列で作られた既存シートをそのまま 20列で書くと見出しだけ空になり、
+ * 「この列は何だ」と後で判らなくなるのでここで埋める。
+ * 既存データには一切触らない。
+ */
+function migrateLodgifySheet(sh) {
+  const want = CONFIG.LDG_WIDTH;
+  const lastCol = sh.getLastColumn();
+  if (lastCol >= want) return sh;
+
+  const cur = sh.getRange(1, 1, 1, Math.max(lastCol, 1)).getValues()[0];
+  const header = LODGIFY_HEADER.slice(0, want);
+  // 既に入っている見出しは尊重する (人が直している場合がある)
+  cur.forEach((v, i) => { if (String(v || '').trim()) header[i] = v; });
+
+  sh.getRange(1, 1, 1, want).setValues([header])
+    .setFontWeight('bold').setBackground('#e8eaed');
+  sh.setColumnWidth(CONFIG.COL_LDG.ADDONS, 60);
+  dlog(`LodgifyBookings を ${lastCol} 列 → ${want} 列に拡張した (見出しのみ)`);
   return sh;
 }
 
