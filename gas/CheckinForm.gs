@@ -23,6 +23,19 @@
  */
 
 /**
+ * フォームの部屋の回答が一棟貸しを指しているか (v2.15)。
+ * normalizeRoom() が 1F / 2F に解決できなかったときの受け皿。
+ */
+function isHouseFormRoom(raw) {
+  const H = CONFIG.HOUSE;
+  if (!H || !H.ENABLED) return false;
+  const s = String(raw == null ? '' : raw).trim();
+  if (!s) return false;
+  if (s === H.ROOM_KEY) return true;
+  return (H.NAME_PATTERNS || []).some(re => re.test(s));
+}
+
+/**
  * Check-In Form の回答を読み、(宿泊日|部屋) → 提出情報 のマップを返す。
  *
  * @return {Object|null}
@@ -74,22 +87,34 @@ function loadCheckinFormEntries() {
 
   vals.forEach(row => {
     const d = fmtDate(row[iCheckin]);
-    const room = normalizeRoom(row[iRoom]);
-    if (!d || !room) { if (row[iCheckin] || row[iRoom]) skipped++; return; }
+
+    //  ★一棟貸し (v2.15)
+    //    フォームの部屋の選択肢に一棟貸しが入ると normalizeRoom() は
+    //    '' を返し、この行がまるごと捨てられる。すると清掃ボードでは
+    //    1F も 2F も「未提出」になり、毎回 E列が赤くなる。
+    //    一棟貸しは1組の客なので、1回の提出で 1F と 2F の両方を
+    //    提出済みとして扱う。
+    const room  = normalizeRoom(row[iRoom]);
+    const house = room ? false : isHouseFormRoom(row[iRoom]);
+    if (!d || (!room && !house)) { if (row[iCheckin] || row[iRoom]) skipped++; return; }
 
     const ts = toDate(row[0]);
     const tsMs = (ts && !isNaN(ts.getTime())) ? ts.getTime() : 0;
-    const key = `${d}|${room}`;
+    const rooms = house ? ((CONFIG.HOUSE.FLOORS || []).slice()) : [room];
 
-    // 同じ日・同じ部屋で複数回出されていたら新しい方を残す
-    if (!map[key] || tsMs >= map[key].tsMs) {
-      map[key] = {
-        tsMs: tsMs,
-        submittedAt: ts,
-        name: (iName >= 0) ? String(row[iName] || '').trim() : '',
-        roomRaw: String(row[iRoom] || '').trim(),
-      };
-    }
+    rooms.forEach(rm => {
+      const key = `${d}|${rm}`;
+      // 同じ日・同じ部屋で複数回出されていたら新しい方を残す
+      if (!map[key] || tsMs >= map[key].tsMs) {
+        map[key] = {
+          tsMs: tsMs,
+          submittedAt: ts,
+          name: (iName >= 0) ? String(row[iName] || '').trim() : '',
+          roomRaw: String(row[iRoom] || '').trim(),
+          house: house,
+        };
+      }
+    });
   });
 
   dlog(`Check-In Form: ${Object.keys(map).length} 件を読み込み ` +

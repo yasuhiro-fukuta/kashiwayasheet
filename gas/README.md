@@ -344,6 +344,15 @@ Lodgify ─ 一棟貸し 5名 2026-10-20→22
 LatestOptions の その他要望 に `Lodgify予約時オプション / 一棟貸し(1F+2F)` と出る。
 1F は1名以上いれば必ず誰か寝るので、行が宙に浮かない。
 
+### 宿泊者名簿 (Check-In Form)
+
+一棟貸しの回答は `normalizeRoom()` が 1F / 2F に解決できないため、
+そのままだと行ごと捨てられ、**1F も 2F も「未提出」で毎回 E列が赤くなる**。
+`isHouseFormRoom()` で一棟貸しの回答を拾い、**1回の提出を 1F と 2F の
+両方の提出**として登録する (`loadCheckinFormEntries`)。
+フォームの部屋の選択肢に一棟貸しを足した場合の表記は
+`CONFIG.HOUSE.NAME_PATTERNS` で拾う。
+
 ### ★セットアップ (1回だけ必要)
 
 **`CONFIG.LODGIFY.ROOM_MAP` に一棟貸しの ID を足すこと。** これが無いと
