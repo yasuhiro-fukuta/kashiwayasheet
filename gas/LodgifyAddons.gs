@@ -392,8 +392,17 @@ function collectLodgifyOptionRows() {
     const sum = lodgifyAddonSummaries(addons);
     if (!sum.meal && !sum.option) { skipped.アドオン無し++; return; }
 
-    const room = String(r[C.ROOM - 1] || '').trim();
+    let room = String(r[C.ROOM - 1] || '').trim();
     if (!room) { skipped.部屋未解決++; return; }
+
+    //  一棟貸しは1組の客なので、発注は1行にまとめる (v2.15)。
+    //  CONFIG.HOUSE.MEAL_FLOOR (=1F) の行に出す。
+    //  1F は1名以上いれば必ず誰か寝るので、行が宙に浮かない。
+    let houseTag = '';
+    if (isHouseRoom(room)) {
+      houseTag = CONFIG.HOUSE.NOTE;
+      room = CONFIG.HOUSE.MEAL_FLOOR;
+    }
 
     const checkin = toDate(r[C.CHECKIN - 1]);
     if (!checkin || isNaN(checkin.getTime())) { skipped.日付不正++; return; }
@@ -415,7 +424,8 @@ function collectLodgifyOptionRows() {
     row[O.GUESTS - 1]        = numOrZero(r[C.GUESTS - 1]) || '';
     row[O.MEAL_SUMMARY - 1]  = sum.meal;
     row[O.OPT_SUMMARY - 1]   = sum.option;
-    row[O.OTHER_REQ - 1]     = CONFIG.LODGIFY.ADDONS.ORIGIN_TAG || 'Lodgify予約時オプション';
+    row[O.OTHER_REQ - 1]     = (CONFIG.LODGIFY.ADDONS.ORIGIN_TAG || 'Lodgify予約時オプション')
+      + (houseTag ? ` / ${houseTag}(1F+2F)` : '');
     row[O.FORM_JSON - 1]     = JSON.stringify({
       _source:     'lodgify',
       _booking_id: bookingId,

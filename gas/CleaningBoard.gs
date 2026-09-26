@@ -56,6 +56,21 @@ function buildCleaningBoard() {
   dlog(`CleaningBoard: +${added} stays from Lodgify (iCal に無い予約)`);
 
   applyLodgifyPeople(stays, bookings);
+
+  //  ★一棟貸しを 1F / 2F の2行に展開する (v2.15)。
+  //    applyOptionsInfo より前に呼ぶこと。食事とオプションは
+  //    (宿泊日, 1F/2F) で突合するため、展開前だと一棟貸しの食事が
+  //    清掃ボードに出ない。
+  try {
+    const hx = expandHouseStays(stays);
+    if (hx.houses) {
+      dlog(`CleaningBoard: 一棟貸し ${hx.houses}件 → ${hx.added}行 ` +
+           `(売止ゴースト吸収 ${hx.absorbed} / 重複 ${hx.clashes})`);
+    }
+  } catch (e) {
+    Logger.log(`一棟貸しの展開に失敗 (処理は続行): ${e.stack || e}`);
+  }
+
   applyOptionsInfo(stays);
   applyOverride(stays);
   applyCheckinFormStatus(stays);   // 宿泊者名簿フォームの提出状況
@@ -174,6 +189,9 @@ function newStay(o) {
     // applyCheckinFormStatus() が設定する。
     // ★食事フォーム (LatestOptions) とは別物なので混同しないこと。
     formDone:   null,
+    //  人数0が「取れなかった」ではなく「その階には寝ない」場合に立てる。
+    //  一棟貸しを展開したときの布団0の階がこれ (expandHouseStays)。
+    zeroOk:     o.zeroOk || false,
   };
 }
 
@@ -532,6 +550,16 @@ function renderCleaningRows(stays) {
     }
   });
 
+  //  CL.ROOMS に無い部屋の滞在は、この先どの行にも載らない。
+  //  一棟貸しは expandHouseStays() で 1F/2F に化けているはずなので、
+  //  ここに残っていたら展開に失敗している。黙って消さずに知らせる。
+  const orphan = stays.filter(s => CL.ROOMS.indexOf(s.room) < 0);
+  if (orphan.length) {
+    Logger.log(`!! 清掃ボードに載らない滞在が ${orphan.length} 件あります ` +
+               `(部屋=${[...new Set(orphan.map(s => s.room))].join(' / ')})。` +
+               `一棟貸しなら expandHouseStays() を確認してください。`);
+  }
+
   // 部屋ごとの到着日一覧 (次回IN日の算出用)
   const arrivalsByRoom = {};
   CL.ROOMS.forEach(r => {
@@ -583,7 +611,9 @@ function renderCleaningRows(stays) {
         nights    = tonight.nights || '';
         meal      = tonight.meal || '';
         if (tonight.notes) tonight.notes.forEach(n => { if (n) notes.push(n); });
-        if (!tonight.people) notes.push('⚠人数不明 → CleaningOverride に記入');
+        if (!tonight.people && !tonight.zeroOk) {
+          notes.push('⚠人数不明 → CleaningOverride に記入');
+        }
       }
       if (staying.length > 1) notes.unshift('⚠同室に複数予約');
 
@@ -760,6 +790,7 @@ function listPendingCheckinForms() {
   const stays = readStaysFromReservations();
   mergeLodgifyStays(stays, bookings);
   applyLodgifyPeople(stays, bookings);
+  expandHouseStays(stays);        // 一棟貸しも 1F/2F として一覧に出す
   applyOptionsInfo(stays);
   applyOverride(stays);
   const map = applyCheckinFormStatus(stays);

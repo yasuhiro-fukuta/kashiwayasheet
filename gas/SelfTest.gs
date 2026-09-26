@@ -37,6 +37,7 @@ function selfTest() {
     'lodgifyRowKey', 'syncLodgifyBookings',                      // LodgifyFetcher.gs
     'toHalfWidth', 'addDaysStr', 'numOrZero',                    // Utils.gs
     'loadCheckinFormEntries', 'applyCheckinFormStatus',           // CheckinForm.gs
+    'isHouseRoom', 'splitHouseGuests', 'expandHouseStays',        // House.gs
     'extractLodgifyAddons', 'lodgifyAddonSummaries',
     'syncLodgifyMealOptions', 'lodgifyOptionMeta',                // LodgifyAddons.gs
     'syncOptions', 'runBatch', 'diagnoseLodgifyMatch',
@@ -78,6 +79,9 @@ function selfTest() {
     ['optKey',               'lodgifyOptionMeta(row',       'OptionSync.gs'],
     ['applyOptionsInfo',     'cur.meals.push(meal',         'CleaningBoard.gs'],
     ['lodgifyItemToRow',     'C.ADDONS - 1',                'LodgifyFetcher.gs'],
+    ['buildCleaningBoard',   'expandHouseStays(stays',      'CleaningBoard.gs'],
+    ['newStay',              'o.zeroOk',                    'CleaningBoard.gs'],
+    ['normalizeLodgifyBooking', 'b.is_unavailable',         'LodgifyFetcher.gs'],
   ];
   const stale = [];
   VERSION_MARKS.forEach(([fn, mark, file]) => {
@@ -241,6 +245,43 @@ function selfTest() {
     ? ok(`出所で重複排除キーが分かれている ("${optKey(ldgRow)}" / "${optKey(formRow)}")`)
     : ng('重複排除キーが同じ → フォーム行とアドオン行が互いを消し合う');
 
+  // ── 3c. 一棟貸しの人数割り振り ─────────────────────────────
+  //  運用で決めた表 (X → 1F / 2F) をそのまま再現できているか。
+  //  ここが狂うと布団の枚数が狂う。
+  Logger.log('\n[3c] 一棟貸しの人数割り振り');
+  const HOUSE_TABLE = [
+    [1, 1, 0], [2, 2, 0], [3, 2, 1], [4, 2, 2],
+    [5, 3, 2], [6, 4, 2], [7, 4, 3], [8, 4, 4],
+  ];
+  const badSplit = [];
+  HOUSE_TABLE.forEach(([x, f, g]) => {
+    const sp = splitHouseGuests(x);
+    if (sp.floors['1F'] !== f || sp.floors['2F'] !== g) {
+      badSplit.push(`${x}名 → 1F ${sp.floors['1F']} / 2F ${sp.floors['2F']} (期待 ${f} / ${g})`);
+    }
+  });
+  badSplit.length
+    ? ng(`人数の割り振りが表と違う: ${badSplit.join(' , ')}`)
+    : ok(`運用表 ${HOUSE_TABLE.length} 件すべて一致 (2人ずつ 1F→2F→1F→2F、各階上限4)`);
+
+  const over = splitHouseGuests(9);
+  (over.floors['1F'] === 4 && over.floors['2F'] === 4 && over.over === 1)
+    ? ok('定員超過 (9名) は 4/4 に丸めて over=1 を返す')
+    : ng(`定員超過の扱いがおかしい: ${JSON.stringify(over)}`);
+
+  eq('splitHouseGuests(0)', JSON.stringify(splitHouseGuests(0).floors), JSON.stringify({ '1F': 0, '2F': 0 }));
+  eq('isHouseRoom("一棟")', isHouseRoom(CONFIG.HOUSE.ROOM_KEY), true);
+  eq('isHouseRoom("1F")',   isHouseRoom('1F'), false);
+
+  //  一棟貸しの ID が ROOM_MAP に入っているか。
+  //  入っていないと Lodgify の一棟貸し予約が「部屋未解決」で捨てられる。
+  const houseIds = Object.keys(CONFIG.LODGIFY.ROOM_MAP || {})
+    .filter(k => CONFIG.LODGIFY.ROOM_MAP[k] === CONFIG.HOUSE.ROOM_KEY);
+  houseIds.length
+    ? ok(`ROOM_MAP に一棟貸しの ID: ${houseIds.join(' / ')}`)
+    : warn('ROOM_MAP に一棟貸しの ID が無い → 一棟貸しの予約は取り込めません。' +
+           '「🏠 一棟貸しの設定・取込確認」(dumpHouseRentals) を実行してください。');
+
   // ── 4. シートが揃っているか ────────────────────────────────
   Logger.log('\n[4] シートの存在');
   const ss = SpreadsheetApp.getActiveSpreadsheet();
@@ -302,6 +343,22 @@ function selfTest() {
     ng(`アドオンの確認に失敗: ${e.message || e}`);
   }
 
+  // ── 5c. 一棟貸しの取り込み状況 ─────────────────────────────
+  Logger.log('\n[5c] 一棟貸し (Vacation-House-Rental)');
+  const houseBookings = bookings.filter(b => isHouseRoom(b.room));
+  if (!houseBookings.length) {
+    warn('一棟貸しの予約が 0 件。Lodgify に予約があるのに 0 件なら ' +
+         'ROOM_MAP の ID を確認してください (dumpHouseRentals)。');
+  } else {
+    ok(`一棟貸しの予約 ${houseBookings.length} 件`);
+    houseBookings.forEach(b => {
+      const sp = splitHouseGuests(b.people);
+      Logger.log(`       ${b.checkin}→${b.checkout} ${b.name || '(氏名なし)'} ` +
+                 `${b.people}名 → 1F ${sp.floors['1F']}名 / 2F ${sp.floors['2F']}名` +
+                 (sp.over ? `  ⚠定員超過(+${sp.over})` : ''));
+    });
+  }
+
   // ── 6. 直予約が清掃ボードに載るか (メモリ上で再現。書き込まない) ──
   Logger.log('\n[6] 直予約が清掃ボードに載るか');
   const stays = readStaysFromReservations();
@@ -310,6 +367,11 @@ function selfTest() {
   added ? ok(`Lodgify から補完した滞在 ${added} 件`)
         : warn('補完 0 件。iCal がすべての夜を押さえているなら正常です。');
   applyLodgifyPeople(stays, bookings);
+  const hx = expandHouseStays(stays);
+  if (hx.houses) {
+    ok(`一棟貸し ${hx.houses}件 → ${hx.added}行に展開 ` +
+       `(売止ゴースト吸収 ${hx.absorbed} / 重複 ${hx.clashes})`);
+  }
   applyOptionsInfo(stays);
   applyOverride(stays);
 

@@ -242,6 +242,16 @@ function normalizeLodgifyBooking(b, skipped) {
     return [];
   }
 
+  //  ★売止 (Closed period) は予約ではない (v2.15)。
+  //    一棟貸しを始めたことで、部屋貸しと一棟貸しが相互に売止になる。
+  //    売止を予約として取り込むと、誰もいない 1F/2F が「客あり」に見える。
+  //    実レスポンスに is_unavailable があることは LodgifyBookings の
+  //    原文JSON で確認済み ("is_unavailable":false)。
+  if (b.is_unavailable === true || b.isUnavailable === true) {
+    bump('売止(is_unavailable)');
+    return [];
+  }
+
   const checkin  = toDate(b.arrival   || b.date_arrival);
   const checkout = toDate(b.departure || b.date_departure);
   if (!checkin || !checkout || isNaN(checkin.getTime()) || isNaN(checkout.getTime())) {
@@ -318,6 +328,16 @@ function resolveLodgifyRoom(rm, b) {
 
   const pid = String(b.property_id || '');
   if (map[pid]) return map[pid];
+
+  //  ★一棟貸しの保険 (v2.15)。
+  //    本筋は ROOM_MAP への ID 追記。実測では rooms[].name が空で返るため
+  //    ここまで来ないことが多いが、名前が返るなら拾えるようにしておく。
+  const H = CONFIG.HOUSE;
+  if (H && H.ENABLED) {
+    const text = [rm.name, rm.room_type_name, b.property_name, b.name]
+      .filter(v => v).join(' ');
+    if (text && (H.NAME_PATTERNS || []).some(re => re.test(text))) return H.ROOM_KEY;
+  }
 
   return '';
 }

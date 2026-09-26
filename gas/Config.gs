@@ -268,11 +268,18 @@ const CONFIG = {
     //    793801 = Superior Family Room (2nd floor)  → 2F
     //    860944 / 860952 は上記レンタルに自動生成された room_type_id。
     //    API の rooms[].name は空で返るため、ID 引きが必須。
+    //
+    //  ★一棟貸し (Vacation-House-Rental) を足すときもここに書く。
+    //    値は CONFIG.HOUSE.ROOM_KEY ('一棟')。
+    //    ID が分からないときは メニュー「🔍 Lodgify レスポンス確認」
+    //    (dumpLodgifyBookings) を実行すると、解決できなかった生値が
+    //    「!! 部屋を解決できなかった生値」としてログに出る。
     ROOM_MAP: {
       '793793': '1F',
       '793801': '2F',
       '860944': '1F',
       '860952': '2F',
+      // '______': '一棟',   ← Vacation-House-Rental の room_type_id / property_id
     },
 
     //  ★直予約の判定 (v2.10)
@@ -364,8 +371,65 @@ const CONFIG = {
     },
   },
 
+  // ── 一棟貸し (Vacation-House-Rental) ───────────────────────
+  //  2026-09 から3部屋目として運用開始。
+  //  実体は「1F と 2F を売止にして、無人の一棟貸しとして売る」もの。
+  //  部屋貸しと一棟貸しは Lodgify 側で相互に売止になる (同時には売れない)。
+  //
+  //  ★CleaningBoard に3行目は作らない。
+  //    CONFIG.CLEANING.ROOMS は ['1F','2F'] のまま動かさない。
+  //    行数が変わると A〜D列の手動入力が全部ずれる (START_DATE と同じ理由)。
+  //    代わりに expandHouseStays() が、一棟貸し1件を
+  //    「同じ人が 1F と 2F を取った」形の2件に展開する。
+  //
+  //  ★布団の数 = その階で寝る人数。
+  //    2人ずつ 1F → 2F → 1F → 2F の順に埋める。各階の上限は4。
+  //      X  1F 2F        X  1F 2F
+  //      1   1  0        5   3  2
+  //      2   2  0        6   4  2
+  //      3   2  1        7   4  3
+  //      4   2  2        8   4  4
+  //    (運用で決めた表。splitHouseGuests() がこの表を再現する)
+  HOUSE: {
+    ENABLED: true,
+
+    //  内部キー。LodgifyBookings の「部屋」列にはこの値が入る。
+    //  CleaningBoard の行にはならない (展開されて消える)。
+    ROOM_KEY: '一棟',
+
+    //  展開先。CONFIG.CLEANING.ROOMS と同じ並びにすること。
+    FLOORS: ['1F', '2F'],
+
+    //  各階の布団の上限と、1回に割り当てる人数
+    CAP_PER_FLOOR: 4,
+    FILL_BLOCK:    2,
+
+    //  rooms[].name / property_name が返ってきた場合の保険。
+    //  ★実測では Lodgify の rooms[].name は空で返るため、
+    //    ROOM_MAP への ID 追記が本筋。こちらは当てにしない。
+    NAME_PATTERNS: [
+      /vacation[-\s_]*house/i,
+      /whole[-\s_]*house/i,
+      /entire[-\s_]*(house|home|place)/i,
+      /一棟/,
+    ],
+
+    //  食事オプションをどの階の行に出すか。
+    //  一棟貸しは1組の客なので、発注は1行にまとめる。
+    //  1F は X>=1 なら必ず1名以上いるので 1F にする。
+    MEAL_FLOOR: '1F',
+
+    //  清掃ボードの備考に出す文言
+    NOTE:        '一棟貸し',
+    NOTE_NO_BED: '就寝なし',
+    NOTE_OVER:   '⚠定員超過',
+    NOTE_CLASH:  '⚠一棟貸しと部屋貸しが重複',
+  },
+
   // ── 清掃ボード生成設定 ─────────────────────────────────────
   CLEANING: {
+    //  ★一棟貸しを足しても、ここは ['1F','2F'] のまま。
+    //    CONFIG.HOUSE のコメントを読むこと。
     ROOMS: ['1F', '2F'],
 
     // ★開始日を固定する。

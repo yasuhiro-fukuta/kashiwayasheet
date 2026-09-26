@@ -1,4 +1,4 @@
-# 柏屋 予約同期 (Kashiwaya Reservation Sync) v2.14
+# 柏屋 予約同期 (Kashiwaya Reservation Sync) v2.15
 
 Google スプレッドシート + Apps Script。Booking.com / Airbnb の iCal、
 Lodgify Public API、Google フォームから宿泊者情報を集め、
@@ -83,6 +83,7 @@ iCal が押さえていない「夜」だけを拾って骨格に合流させる
 | `ReservationSync.gs` | 予約同期と消失(キャンセル)検知 |
 | `LodgifyFetcher.gs` | Lodgify Public API v2 の取得と `LodgifyBookings` への upsert |
 | `LodgifyAddons.gs` | **Lodgify 予約時オプション(アドオン)の取込** (v2.14 新規) |
+| `House.gs` | **一棟貸しを 1F / 2F の2行に展開する** (v2.15 新規) |
 | `OptionSync.gs` | フォーム回答の取込、食事/オプションサマリ生成 |
 | `GuestCount.gs` | **人数解決の共通ロジック** (v2.10 新規) |
 | `CleaningBoard.gs` | 清掃予定表の生成 |
@@ -174,6 +175,7 @@ v2.10.3 で `CheckinForm.gs` を新設し後者を見るように直した。
 | `runConsistencyCheckOnly()` | 手動列の矛盾チェック。指摘事項シートに追記する |
 | `dumpLodgifyAddons()` | **予約時オプションが API のどこに入っているかを確認する。書き込みなし** |
 | `runLodgifyAddonSyncOnly()` | 予約時オプション → 食事予約表 の反映だけを実行する |
+| `dumpHouseRentals()` | **一棟貸しの設定と取込状況。ROOM_MAP 未設定もここで分かる。書き込みなし** |
 
 `selfTest` の **[1b]** は `Function.prototype.toString()` で関数のソースを見て、
 新版の目印 (呼び出しの形) が含まれるかを判定する。
@@ -284,6 +286,79 @@ Lodgify サポートに
 
 ---
 
+## 一棟貸し (Vacation-House-Rental) — v2.15
+
+3部屋目として一棟貸しの運用を始めた。実体は新しい部屋ではなく、
+**1F と 2F を売止にして、無人の一棟貸しとして売り直したもの**。
+Lodgify 側で部屋貸しと一棟貸しは相互に売止になる (同時には売れない)。
+
+### 何をしているか
+
+一棟貸しの予約1件を「**同じ人が 1F と 2F を取った**」形の2件に展開する。
+
+```
+Lodgify ─ 一棟貸し 5名 2026-10-20→22
+        └ expandHouseStays()
+            ├ 1F  3名  2026-10-20→22  備考「一棟貸し(全5名: 1F 3名 / 2F 2名)」
+            └ 2F  2名  2026-10-20→22  同上
+```
+
+**★CleaningBoard に3行目は作らない。**
+`CONFIG.CLEANING.ROOMS` は `['1F','2F']` のまま動かさない。
+行数が変わると A〜D列の手動入力が日付ごとずれる (`START_DATE` と同じ理由)。
+
+### 布団の数 = その階で寝る人数
+
+運用で決めた表:
+
+| X | 1F | 2F | | X | 1F | 2F |
+|---|---|---|---|---|---|---|
+| 1 | 1 | 0 | | 5 | 3 | 2 |
+| 2 | 2 | 0 | | 6 | 4 | 2 |
+| 3 | 2 | 1 | | 7 | 4 | 3 |
+| 4 | 2 | 2 | | 8 | 4 | 4 |
+
+規則にすると **「2人ずつ 1F → 2F → 1F → 2F の順に埋める。各階の上限は4」**。
+上の8件すべてこれで再現できる (`splitHouseGuests()`、`selfTest` の `[3b]`…`[3c]` で検証)。
+9名以上は 4/4 に丸め、`over` に超過分を返して備考に `⚠定員超過(+N名)` を出す。
+
+`べ`(C列) は手動列なので GAS は書かない。代わりに **F列「泊人」にその階で寝る人数**が
+入るので、`べ` はそれに合わせればよい (矛盾チェックの `setsMismatch` がそのまま効く)。
+
+### 売止 (Closed period) の扱い
+
+2つ手当てしてある。
+
+1. **Lodgify API の売止を予約として取り込まない。**
+   `is_unavailable: true` の booking を弾く (`normalizeLodgifyBooking`)。
+   これが無いと、一棟貸しで埋まった夜の 1F/2F 売止が「客あり」に見える。
+2. **Booking.com の iCal から来る売止ゴーストを吸収する。**
+   Booking.com の iCal は予約も売止も同じ `"CLOSED - Not available"` で配信するため、
+   区別できない。一棟貸しの期間に**完全に収まる無記名の滞在**は展開時に吸収する。
+   氏名が付いているもの (= 実在の部屋貸し) や期間がはみ出すものは吸収せず、
+   両方に `⚠一棟貸しと部屋貸しが重複` を立てて人に判断させる。
+
+### 食事オプション
+
+一棟貸しは1組の客なので、**発注は 1F の行にまとめる** (`CONFIG.HOUSE.MEAL_FLOOR`)。
+LatestOptions の その他要望 に `Lodgify予約時オプション / 一棟貸し(1F+2F)` と出る。
+1F は1名以上いれば必ず誰か寝るので、行が宙に浮かない。
+
+### ★セットアップ (1回だけ必要)
+
+**`CONFIG.LODGIFY.ROOM_MAP` に一棟貸しの ID を足すこと。** これが無いと
+Lodgify の一棟貸し予約は「部屋未解決」で捨てられる。
+
+1. メニュー「🏠 一棟貸しの設定・取込確認」(`dumpHouseRentals`) を実行
+2. ID が未設定なら、「🔍 Lodgify レスポンス確認」(`dumpLodgifyBookings`) を実行し、
+   ログ末尾の「!! 部屋を解決できなかった生値」に出る値を控える
+3. `Config.gs` の `ROOM_MAP` に `'<その値>': '一棟',` を追記する
+
+名前 (`Vacation-House-Rental` など) からの解決も保険で入れてあるが、
+実測では Lodgify の `rooms[].name` が空で返るため**当てにしない**。
+
+---
+
 ## 既知の制限
 
 - Airbnb 経由の予約は Lodgify に入らないため人数が取れない。
@@ -297,3 +372,7 @@ Lodgify サポートに
   まず `dumpLodgifyAddons()` を実行して確認すること (上記参照)。
 - 1予約で2部屋押さえた予約のアドオンは先頭の部屋にだけ載る。
   どちらの部屋の食事かは API から判らないため。
+- 一棟貸しは **Lodgify 経由でしか取れない**。`CONFIG.ICAL_SOURCES` は
+  1F / 2F の4本だけで、一棟貸しの iCal は登録していない。
+  Booking.com / Airbnb にも一棟貸しを出すなら iCal URL の追加が要る。
+- 一棟貸しの `べ`(C列) は手動。F列「泊人」に階ごとの人数が入るので、それに合わせる。

@@ -336,6 +336,7 @@ function onOpen() {
     .addItem('❓ E列が赤い理由を調べる',              'explainRedKeys')
     .addItem('🔍 Lodgify レスポンス確認',            'dumpLodgifyBookings')
     .addItem('🍱 Lodgify アドオン確認',              'dumpLodgifyAddons')
+    .addItem('🏠 一棟貸しの設定・取込確認',           'dumpHouseRentals')
     .addItem('🩺 直予約・人数の突合診断',            'diagnoseLodgifyMatch')
     .addSeparator()
     .addItem('🎨 条件付き書式を設定 (Options)',       'setupConditionalFormatting')
