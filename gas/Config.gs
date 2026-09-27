@@ -279,11 +279,20 @@ const CONFIG = {
       '793801': '2F',
       '860944': '1F',
       '860952': '2F',
-      //  917713 = Vacation-House-Rental (一棟貸し)。
-      //    2026-09-27 に実レスポンスで確定 (dumpLodgifyBookings の
-      //    「部屋を解決できなかった生値」に出た値)。
+      //  Vacation-House-Rental (一棟貸し)。
+      //    850548 = レンタルID (property_id) … 管理画面の Rentals に出る値
+      //    917713 = room_type_id            … API が rooms[] で返す値
+      //    2026-09-27 に実レスポンスと管理画面の両方で確定。
+      //
+      //    ★両方入れる理由: rooms[] が空で返ってきた予約は
+      //      room_type_id の代わりに property_id が使われる
+      //      (normalizeLodgifyBooking のフォールバック)。
+      //      片方しか入れていないと、その予約だけ部屋未解決で落ちる。
+      //      1F / 2F も同じ理由で2つずつ登録してある。
+      //
       //    この予約は CleaningBoard の行にはならず、
       //    expandHouseStays() が 1F / 2F の2行に展開する。
+      '850548': '一棟',
       '917713': '一棟',
     },
 

@@ -358,8 +358,20 @@ LatestOptions の その他要望 に `Lodgify予約時オプション / 一棟�
 **`CONFIG.LODGIFY.ROOM_MAP` に一棟貸しの ID を足すこと。** これが無いと
 Lodgify の一棟貸し予約は「部屋未解決」で捨てられる。
 
-→ **2026-09-27 に `917713` で確定済み** (実レスポンスで確認)。
-　 以降この手順が要るのは、リスティングを作り直して ID が変わったときだけ。
+→ **2026-09-27 に確定済み**。`850548`(レンタルID / property_id) と
+　 `917713`(room_type_id) の**両方**を登録してある。
+
+| レンタル | property_id | room_type_id |
+|---|---|---|
+| Japanese-Style Room (1st floor) | 793793 | 860944 |
+| Superior Family Room (2nd floor) | 793801 | 860952 |
+| Vacation-House-Rental | 850548 | 917713 |
+
+★両方入れる理由: `rooms[]` が空で返ってきた予約は `room_type_id` の代わりに
+`property_id` が使われる (`normalizeLodgifyBooking` のフォールバック)。
+片方しか入れていないと、その予約だけ部屋未解決で落ちる。
+
+以降この手順が要るのは、リスティングを作り直して ID が変わったときだけ。
 
 1. メニュー「🏠 一棟貸しの設定・取込確認」(`dumpHouseRentals`) を実行
 2. ID が未設定なら、「🔍 Lodgify レスポンス確認」(`dumpLodgifyBookings`) を実行し、
