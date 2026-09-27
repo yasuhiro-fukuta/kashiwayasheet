@@ -426,6 +426,25 @@ Lodgify ─ 一棟貸し 5名 2026-10-20→22
 LatestOptions の その他要望 に `Lodgify予約時オプション / 一棟貸し(1F+2F)` と出る。
 1F は1名以上いれば必ず誰か寝るので、行が宙に浮かない。
 
+### フォームの部屋の選択肢に一棟貸しを足すとき
+
+**食事フォーム・宿泊者名簿フォームのどちらも、選択肢を足すだけでよい。**
+GAS 側は `isHouseFormRoom()` (`CONFIG.HOUSE.NAME_PATTERNS`) で拾う。
+
+- 食事フォーム … その回答は **1F の行にまとめる** (`CONFIG.HOUSE.MEAL_FLOOR`)。
+  その他要望(J列)の先頭に `一棟貸し(1F+2F)` が付く。
+  対応前は `normalizeRoom()` が '' を返し、**回答が丸ごと捨てられていた**
+  (`buildOptionRow` がキー項目不足で null を返す。エラーも出ない)。
+- 宿泊者名簿 … 1回の提出を **1F と 2F の両方の提出**として扱う。
+
+★判定は `normalizeRoom()` より**先に**行っている。
+`Whole House (1st & 2nd floor)` のような選択肢名だと
+`normalizeRoom()` が `1st` を拾って 1F と誤判定してしまうため。
+
+拾える書き方の例:
+`Vacation-House-Rental` / `Whole House Rental` / `Entire house` / `一棟貸し`
+これ以外の名前にするなら `CONFIG.HOUSE.NAME_PATTERNS` に足すこと。
+
 ### 宿泊者名簿 (Check-In Form)
 
 一棟貸しの回答は `normalizeRoom()` が 1F / 2F に解決できないため、

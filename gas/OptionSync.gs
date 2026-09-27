@@ -183,8 +183,20 @@ function buildOptionRow(formRow, formHeaders, batchTs, formTs) {
   const checkinDate = checkin ? toDate(checkin) : '';
   row[C.CHECKIN - 1] = checkinDate;
 
+  //  ★一棟貸し (v2.18)
+  //    フォームの部屋の選択肢に一棟貸しを足すと normalizeRoom() は
+  //    '' を返す。部屋が空の行は下のキー判定で null にされ、
+  //    回答そのものが黙って捨てられる。エラーも出ない。
+  //    一棟貸しは1組の客なので、Lodgify のアドオンと同じく
+  //    CONFIG.HOUSE.MEAL_FLOOR (=1F) の行にまとめる。
+  //
+  //    ★判定は normalizeRoom() より先に行う。
+  //      「Whole House (1st & 2nd floor)」のような選択肢名だと
+  //      normalizeRoom() が '1st' を拾って 1F と誤判定し、
+  //      一棟貸しの印が付かなくなる。
   const roomRaw = pickValue(h2v, ['Room', '部屋']);
-  row[C.ROOM - 1] = normalizeRoom(roomRaw);
+  const isHouse = isHouseFormRoom(roomRaw);
+  row[C.ROOM - 1] = isHouse ? CONFIG.HOUSE.MEAL_FLOOR : normalizeRoom(roomRaw);
 
   row[C.GUEST_NAME - 1] = pickValue(h2v, [
     'Name under the reservation',
@@ -218,11 +230,15 @@ function buildOptionRow(formRow, formHeaders, batchTs, formTs) {
     ? (opt ? `${opt} ⚠ ${taxiNote}` : `⚠ ${taxiNote}`)
     : opt;
 
-  // その他要望
-  row[C.OTHER_REQ - 1] = pickValue(h2v, [
+  // その他要望 (一棟貸しならその印を先頭に付ける)
+  const otherReq = pickValue(h2v, [
     'Please write if you have requests and questions below',
     'Please write if you have requests and questions below.',
   ]);
+  const houseTag = isHouse ? `${CONFIG.HOUSE.NOTE}(1F+2F)` : '';
+  row[C.OTHER_REQ - 1] = houseTag
+    ? (otherReq ? `${houseTag} / ${otherReq}` : houseTag)
+    : otherReq;
 
   // フォーム原文 JSON (非空のみ採用。重複見出しは最初の非空を保持)
   const jsonObj = {};

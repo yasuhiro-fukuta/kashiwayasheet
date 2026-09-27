@@ -94,8 +94,12 @@ function loadCheckinFormEntries() {
     //    1F も 2F も「未提出」になり、毎回 E列が赤くなる。
     //    一棟貸しは1組の客なので、1回の提出で 1F と 2F の両方を
     //    提出済みとして扱う。
-    const room  = normalizeRoom(row[iRoom]);
-    const house = room ? false : isHouseFormRoom(row[iRoom]);
+    //  ★一棟貸しの判定を normalizeRoom() より先に行う (v2.18)。
+    //    「Whole House (1st & 2nd floor)」のような選択肢名だと
+    //    normalizeRoom() が '1st' を拾って 1F と誤判定し、
+    //    2F 側が未提出のままになる。
+    const house = isHouseFormRoom(row[iRoom]);
+    const room  = house ? '' : normalizeRoom(row[iRoom]);
     if (!d || (!room && !house)) { if (row[iCheckin] || row[iRoom]) skipped++; return; }
 
     const ts = toDate(row[0]);
