@@ -218,13 +218,16 @@ const CONFIG = {
     UPDATED_AT:  20,   // T ここまで
   },
 
-  // CleaningOverride の列 (5列) — 人が手で書くシート
+  // CleaningOverride の列 (6列) — 人が手で書くシート
   COL_OVR: {
     CHECKIN:    1,   // 宿泊日 (チェックイン日)
     ROOM:       2,
     GUESTS:     3,
     GUEST_NAME: 4,
     MEMO:       5,
+    MEAL:       6,   // 食事の手動追記 (WhatsApp等で受けた1人前注文など)。
+                     // CleaningBoard の食事列(R)に「 / 」区切りで合算される。
+                     // ★R列への直書きは毎時バッチで消えるのでこちらに書く。
   },
 
   ICAL_SOURCES: [

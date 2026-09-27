@@ -455,6 +455,10 @@ function applyOptionsInfo(stays) {
  * キーは (宿泊日=チェックイン日, 部屋)。
  * 人数が Lodgify でもフォームでも埋まらない予約は、
  * ここに1行足せば CleaningBoard に反映される。
+ *
+ * F列「食事(追記)」: WhatsApp 等で直接受けた注文 (1人前など) を書くと、
+ * CleaningBoard の食事列(R)に Lodgify/フォーム分と「 / 」区切りで
+ * 合算される。★R列への直書きは毎時バッチで消えるため必ずこちらに書く。
  */
 function applyOverride(stays) {
   const sh = ensureOverrideSheet();
@@ -462,7 +466,7 @@ function applyOverride(stays) {
   if (last <= 1) return;
 
   const C = CONFIG.COL_OVR;
-  const vals = sh.getRange(2, 1, last - 1, 5).getValues();
+  const vals = sh.getRange(2, 1, last - 1, C.MEAL).getValues();
 
   const map = {};
   vals.forEach(row => {
@@ -473,6 +477,7 @@ function applyOverride(stays) {
       people: numOrZero(row[C.GUESTS - 1]),
       name:   String(row[C.GUEST_NAME - 1] || '').trim(),
       memo:   String(row[C.MEMO - 1] || '').trim(),
+      meal:   String(row[C.MEAL - 1] || '').trim(),
     };
   });
 
@@ -485,6 +490,10 @@ function applyOverride(stays) {
     }
     if (hit.name) s.name = hit.name;
     if (hit.memo) s.notes.push(hit.memo);
+    if (hit.meal) {
+      s.meal = !s.meal ? hit.meal
+        : (s.meal.indexOf(hit.meal) >= 0 ? s.meal : s.meal + ' / ' + hit.meal);
+    }
   });
 }
 
@@ -494,10 +503,17 @@ function applyOverride(stays) {
 function ensureOverrideSheet() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   let sh = ss.getSheetByName(CONFIG.SHEET.CLEAN_OVERRIDE);
-  if (sh) return sh;
+  if (sh) {
+    // 既存シートに食事列(F)が無ければヘッダーだけ足す (2026-09-27 追加)
+    if (!String(sh.getRange(1, CONFIG.COL_OVR.MEAL).getValue() || '').trim()) {
+      sh.getRange(1, CONFIG.COL_OVR.MEAL).setValue('食事(追記)')
+        .setFontWeight('bold').setBackground('#FFF2CC');
+    }
+    return sh;
+  }
 
   sh = ss.insertSheet(CONFIG.SHEET.CLEAN_OVERRIDE);
-  const header = ['宿泊日(チェックイン)', '部屋', '人数', '宿泊者名', 'メモ'];
+  const header = ['宿泊日(チェックイン)', '部屋', '人数', '宿泊者名', 'メモ', '食事(追記)'];
   sh.getRange(1, 1, 1, header.length).setValues([header])
     .setFontWeight('bold').setBackground('#FFF2CC');
   sh.setFrozenRows(1);
