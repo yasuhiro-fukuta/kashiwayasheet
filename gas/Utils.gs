@@ -134,6 +134,40 @@ function fmtDate(d) {
   return Utilities.formatDate(dt, CONFIG.TZ, 'yyyy-MM-dd');
 }
 
+/**
+ * スプレッドシートのタイムゾーンでの「その日」を返す (v2.17)。
+ *
+ * ★このブックはスクリプトが Asia/Tokyo、スプレッドシートが
+ *   America/Los_Angeles で動いている。
+ *   セルに Date を書くと、表示はスプシ側のTZで解釈される。
+ *   new Date('2026-12-02') は UTC の0時なので、
+ *   シート上では 2026-12-01 と表示されてしまう。
+ *
+ *   ロジックはすべて fmtDate() (Asia/Tokyo) を通すので正しく動くが、
+ *   人が読む列 (食事予約表の宿泊日など) は表示が1日ずれる。
+ *   それを検出・修正するためにこの関数を使う。
+ *
+ * @param {Date|string} v
+ * @return {string} yyyy-MM-dd (スプシTZでの日付)
+ */
+function sheetDay(v) {
+  const d = toDate(v);
+  if (!d || isNaN(d.getTime())) return '';
+  return Utilities.formatDate(d, spreadsheetTz(), 'yyyy-MM-dd');
+}
+
+/** スプレッドシートのタイムゾーン (取れなければ CONFIG.TZ) */
+let __SS_TZ__ = null;
+function spreadsheetTz() {
+  if (__SS_TZ__) return __SS_TZ__;
+  try {
+    __SS_TZ__ = SpreadsheetApp.getActiveSpreadsheet().getSpreadsheetTimeZone() || CONFIG.TZ;
+  } catch (e) {
+    __SS_TZ__ = CONFIG.TZ;
+  }
+  return __SS_TZ__;
+}
+
 function fmtDateTime(d) {
   if (!d) return '';
   const dt = toDate(d);

@@ -384,8 +384,13 @@ function lodgifyItemToRow(it, fetchedAt, firstSeen) {
   row[C.GUESTS - 1]       = it.people || '';
   row[C.ADULTS - 1]       = it.adults || '';
   row[C.CHILDREN - 1]     = it.children || '';
-  row[C.CHECKIN - 1]      = it.checkin;
-  row[C.CHECKOUT - 1]     = it.checkout;
+  //  ★日付は yyyy-MM-dd の文字列で書く (v2.17)。
+  //    Date を書くとスプシ側のTZ (America/Los_Angeles) で解釈され、
+  //    UTC0時の Date が1日前の日付として表示される。
+  //    文字列ならスプシが自分のTZで解釈するので表示がずれない。
+  //    読み出しはすべて fmtDate() を通すのでロジックは変わらない。
+  row[C.CHECKIN - 1]      = fmtDate(it.checkin);
+  row[C.CHECKOUT - 1]     = fmtDate(it.checkout);
   row[C.NIGHTS - 1]       = it.nights;
   row[C.SOURCE - 1]       = it.source;
   row[C.AMOUNT - 1]       = it.amount || '';

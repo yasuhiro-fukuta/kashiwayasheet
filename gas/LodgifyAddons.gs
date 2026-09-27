@@ -472,7 +472,10 @@ function collectLodgifyOptionRows() {
     row[O.BATCH_TS - 1]      = '';           // 呼び出し側で埋める
     row[O.DELETED_FLAG - 1]  = '';
     row[O.FORM_TS - 1]       = placedAt;
-    row[O.CHECKIN - 1]       = checkin;
+    //  ★文字列で書く (v2.17)。Date を書くとスプシのTZで解釈され、
+    //    食事予約表の宿泊日が1日前に表示される (女将が見る列)。
+    //    M列の曜日 =WEEKDAY(D2,2) も1日ずれる。
+    row[O.CHECKIN - 1]       = fmtDate(checkin);
     row[O.ROOM - 1]          = room;
     row[O.GUEST_NAME - 1]    = String(r[C.GUEST_NAME - 1] || '').trim();
     row[O.GUESTS - 1]        = numOrZero(r[C.GUESTS - 1]) || '';
@@ -600,6 +603,15 @@ function lodgifyOptionRowChanged(cur, next) {
 
   if (fmtDateTime(cur[C.FORM_TS - 1]) !== fmtDateTime(next[C.FORM_TS - 1])) return true;
   if (fmtDate(cur[C.CHECKIN - 1])     !== fmtDate(next[C.CHECKIN - 1]))     return true;
+
+  //  ★表示がずれている行を1回だけ書き直させる (v2.17)。
+  //    以前は Date (UTC0時) を書いていたため、スプシ上では
+  //    宿泊日が1日前に表示されていた。fmtDate() どうしの比較では
+  //    「変化なし」になるので、このままだと直らない。
+  //    スプシTZでの日付が意図した日と食い違う行を「変化あり」と見なす。
+  //    書き直すと文字列→スプシTZの0時で入るので、次からは一致して
+  //    書き込みは起きない (毎バッチ書き直す暴走にはならない)。
+  if (sheetDay(cur[C.CHECKIN - 1]) !== fmtDate(next[C.CHECKIN - 1])) return true;
 
   const plain = [C.ROOM, C.GUEST_NAME, C.MEAL_SUMMARY, C.OPT_SUMMARY, C.OTHER_REQ, C.FORM_JSON];
   for (const col of plain) {
