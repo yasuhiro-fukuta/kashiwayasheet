@@ -304,6 +304,37 @@ API では `amount: 4500` に畳み込まれている。
 ★アドオンの値段を変えたら `ADDON_UNITS` も直すこと。
 直し忘れは `⚠個数未確認` として表に出る（黙って壊れない）。
 
+### アドオン一覧と対応表 (2026-09-27 時点)
+
+アドオンの名前は**フォームの見出しと違う**。同じ料理は同じラベルに寄せる
+（`CONFIG.MEALS` の先頭にアドオン用の行を足してある）。
+寄せないと、食事サマリでフォーム由来の行と表記が揃わず、
+ほなみやへの発注も読みにくくなる。
+
+| Lodgify のアドオン名 | 単価 | 食事サマリのラベル |
+|---|---:|---|
+| Dinner — Chicken Hot Pot for 2 | ¥6,000 | Chicken Hot Pot(2人前) |
+| Dinner — Chicken Hot Pot for 3 | ¥8,000 | Chicken Hot Pot(3人前) |
+| Dinner — Pork Hot Pot (Shabu-shabu) for 2 | ¥8,000 | Shabu-Shabu(2人前) |
+| Dinner — Pork Hot Pot (Shabu-shabu) for 3 | ¥11,000 | Shabu-Shabu(3人前) |
+| Dinner — Pork Chilled Pot (Rei-shabu) for 2 | ¥8,000 | Cold Shabu-Shabu(2人前) |
+| Dinner — Pork Chilled Pot (Rei-shabu) for 3 | ¥11,000 | Cold Shabu-Shabu(3人前) |
+| Dinner — Wagyu Beef Hot Pot (Sukiyaki) for 2 | ¥10,000 | Wagyu Sukiyaki(2人前) |
+| Dinner — Wagyu Beef Hot Pot (Sukiyaki) for 3 | ¥14,000 | Wagyu Sukiyaki(3人前) |
+| Dinner — Vegan Gluten-free Hot Pot for 2 | ¥8,000 | Vegan Hot Pot & Chirashi(2人前) |
+| Dinner — Vegan Gluten-free Hot Pot for 3 | ¥11,000 | Vegan Hot Pot & Chirashi(3人前) |
+| Dinner — Vegan Gluten-free Chilled Pot for 2 | ¥8,000 | Vegan Cold Shabu-Shabu(2人前) |
+| Dinner — Vegan Gluten-free Chilled Pot for 3 | ¥11,000 | Vegan Cold Shabu-Shabu(3人前) |
+| Breakfast — Ochazuke risotto and Miso soup with pickles for 1 | ¥1,500 | Ochazuke Breakfast(1人前) |
+
+夕食はすべて `Single charge / Per stay`、朝食だけ `Per quantity / Per stay`。
+個数が2以上でも 金額÷単価 で割り出せる
+（例: 朝食 ¥4,500 → 3個 → 3人前 / Sukiyaki for 3 を ¥28,000 → 2個 → 6人前）。
+
+**メニューを足したら `CONFIG.MEALS` と `ADDON_UNITS` の両方に足すこと。**
+`MEALS` を忘れると生の商品名が食事サマリに出る。
+`ADDON_UNITS` を忘れると `⚠個数未確認` が出る。
+
 ### ★フィールド名について
 
 Lodgify の公開ドキュメントにアドオンの項目が無く、

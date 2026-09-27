@@ -404,11 +404,24 @@ const CONFIG = {
       //    単価が未設定のアドオンは個数1として扱い、
       //    食事サマリに「⚠個数未確認(¥金額)」を付けて人に知らせる。
       //    黙って1人前にすると発注漏れに直結するため。
+      //    ★2026-09-27 に Lodgify 管理画面のアドオン一覧から転記。
+      //      夕食はすべて「Single charge / Per stay」(基本は個数1)、
+      //      朝食だけ「Per quantity / Per stay」(個数が動く)。
+      //      個数が2以上でも 金額÷単価 で正しく割り出せる。
       ADDON_UNITS: [
-        { test: /Chicken\s*Hot\s*Pot.*\bfor\s*4\b/i,  unit: 10000 },
-        { test: /Chicken\s*Hot\s*Pot.*\bfor\s*3\b/i,  unit:  8000 },
-        { test: /Chicken\s*Hot\s*Pot.*\bfor\s*2\b/i,  unit:  6000 },
-        { test: /Ochazuke/i,                             unit:  1500 },
+        { test: /Chicken\s*Hot\s*Pot.*\bfor\s*3\b/i,                      unit:  8000 },
+        { test: /Chicken\s*Hot\s*Pot.*\bfor\s*2\b/i,                      unit:  6000 },
+        { test: /Pork\s*Hot\s*Pot.*\bfor\s*3\b/i,                         unit: 11000 },
+        { test: /Pork\s*Hot\s*Pot.*\bfor\s*2\b/i,                         unit:  8000 },
+        { test: /Pork\s*Chilled\s*Pot.*\bfor\s*3\b/i,                     unit: 11000 },
+        { test: /Pork\s*Chilled\s*Pot.*\bfor\s*2\b/i,                     unit:  8000 },
+        { test: /Wagyu\s*Beef\s*Hot\s*Pot.*\bfor\s*3\b/i,                unit: 14000 },
+        { test: /Wagyu\s*Beef\s*Hot\s*Pot.*\bfor\s*2\b/i,                unit: 10000 },
+        { test: /Vegan\s*Gluten[-\s]?free\s*Hot\s*Pot.*\bfor\s*3\b/i,    unit: 11000 },
+        { test: /Vegan\s*Gluten[-\s]?free\s*Hot\s*Pot.*\bfor\s*2\b/i,    unit:  8000 },
+        { test: /Vegan\s*Gluten[-\s]?free\s*Chilled\s*Pot.*\bfor\s*3\b/i,unit: 11000 },
+        { test: /Vegan\s*Gluten[-\s]?free\s*Chilled\s*Pot.*\bfor\s*2\b/i,unit:  8000 },
+        { test: /Ochazuke/i,                                                 unit:  1500 },
       ],
       //  逆算した個数が整数にならないときの許容幅 (端数・値引き対策)
       UNIT_TOLERANCE: 0.02,
@@ -560,6 +573,31 @@ const CONFIG = {
   // ・order: サマリ内での表示順 (マッチ優先度=配列順 とは独立)。
   // ・label: サマリ表示名。
   MEALS: [
+    //  ── Lodgify 予約時オプション(アドオン)の表記 ──────────────
+    //   アドオンはフォームと**別の名前**が付いている。同じ料理は
+    //   同じラベルに寄せないと、食事サマリでフォーム由来の行と
+    //   表記が揃わず、ほなみやへの発注も読みにくくなる。
+    //
+    //     Lodgify のアドオン名                     → ラベル
+    //     Pork Hot Pot (Shabu-shabu)              → Shabu-Shabu
+    //     Pork Chilled Pot (Rei-shabu)            → Cold Shabu-Shabu
+    //     Wagyu Beef Hot Pot (Sukiyaki)           → Wagyu Sukiyaki
+    //     Vegan Gluten-free Hot Pot               → Vegan Hot Pot & Chirashi
+    //     Vegan Gluten-free Chilled Pot           → Vegan Cold Shabu-Shabu
+    //     Chicken Hot Pot / Ochazuke              → 既存の行で一致する
+    //
+    //   ★先頭に置いて先に判定させる。フォームの見出しは
+    //     Pork / Wagyu Beef / Vegan Gluten-free で始まらないので
+    //     既存の判定には影響しない。
+    //   ★判定は「Dinner — 」を落とした後の文字列に当たる
+    //     (stripLodgifyAddonPrefix)。
+    { test: /^\s*Vegan\s+Gluten[-\s]?free\s+Chilled/i,   label: 'Vegan Cold Shabu-Shabu',  kind: 'dinner',    order: 4 },
+    { test: /^\s*Vegan\s+Gluten[-\s]?free\s+Hot/i,       label: 'Vegan Hot Pot & Chirashi',kind: 'dinner',    order: 5 },
+    { test: /^\s*Pork\s+Chilled\s+Pot/i,                 label: 'Cold Shabu-Shabu',        kind: 'dinner',    order: 3 },
+    { test: /^\s*Pork\s+Hot\s+Pot/i,                     label: 'Shabu-Shabu',             kind: 'dinner',    order: 2 },
+    { test: /^\s*Wagyu\s+Beef\s+Hot\s+Pot/i,            label: 'Wagyu Sukiyaki',          kind: 'dinner',    order: 6 },
+
+    //  ── GoogleForm の見出し ─────────────────────────────────
     { test: /^\s*Vegan\s+Cold\s+Shabu/i,                 label: 'Vegan Cold Shabu-Shabu',  kind: 'dinner',    order: 4 },
     { test: /^\s*Cold\s+Shabu/i,                         label: 'Cold Shabu-Shabu',        kind: 'dinner',    order: 3 },
     { test: /^\s*Chicken\s+Hot\s+Pot/i,                  label: 'Chicken Hot Pot',         kind: 'dinner',    order: 1 },
