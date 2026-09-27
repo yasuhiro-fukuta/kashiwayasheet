@@ -664,3 +664,159 @@ function runLodgifyAddonSyncOnly() {
              `(復活 ${r.revived}) / -${r.deleted} / 有効 ${r.active}`);
   Logger.log('食事列への反映は buildCleaningBoard() で行われます。');
 }
+
+/**
+ * 診断: 1件の予約の生レスポンスを丸ごと見る (v2.15)。
+ *
+ * アドオンが取れないときに「そもそも API が返していないのか、
+ * こちらの取り出し方が悪いのか」を切り分けるためのもの。
+ *
+ * 次の3つを出す:
+ *   1. 一覧取得 (GET /bookings) で返ってきたその予約の JSON 全文
+ *   2. 個別取得 (GET /bookings/{id}) の JSON 全文
+ *   3. 個別取得にしか無いキー (= 一覧では落ちている情報)
+ *
+ * @param {string|number} needle 予約ID / チェックイン日(yyyy-MM-dd) / 宿泊者名の一部
+ */
+function dumpLodgifyBookingJson(needle) {
+  const apiKey = getLodgifyApiKey();
+  if (!apiKey) {
+    Logger.log('APIキー未設定。setLodgifyApiKey("xxx") を先に実行してください。');
+    return;
+  }
+  const key = String(needle == null ? '' : needle).trim();
+  if (!key) {
+    Logger.log('引数が要ります。例: dumpLodgifyBookingJson("2026-11-30")');
+    Logger.log('  予約ID / チェックイン日(yyyy-MM-dd) / 宿泊者名の一部 のどれでも可。');
+    return;
+  }
+
+  const items = fetchLodgifyBookings(apiKey);
+  const lower = key.toLowerCase();
+  const hit = items.filter(b => {
+    if (String(b.id) === key) return true;
+    if (fmtDate(b.arrival || b.date_arrival) === key) return true;
+    const name = String((b.guest && b.guest.name) || b.guest_name || '');
+    return name.toLowerCase().indexOf(lower) >= 0;
+  });
+
+  if (!hit.length) {
+    Logger.log(`"${key}" に一致する予約が見つかりません (取得 ${items.length} 件)。`);
+    return;
+  }
+  if (hit.length > 1) {
+    Logger.log(`"${key}" に ${hit.length} 件一致しました。先頭を使います:`);
+    hit.forEach(b => Logger.log(`  id=${b.id} ${fmtDate(b.arrival)} ` +
+      `${(b.guest && b.guest.name) || '-'}`));
+  }
+  const b = hit[0];
+
+  Logger.log(`=== 予約 id=${b.id} ${fmtDate(b.arrival)}→${fmtDate(b.departure)} ` +
+             `${(b.guest && b.guest.name) || '-'} ===`);
+
+  // 1) 一覧取得の生JSON
+  logLongLines_('① 一覧取得 GET /bookings の生JSON', JSON.stringify(b, null, 1));
+  Logger.log(`① のトップレベルキー: ${Object.keys(b).sort().join(', ')}`);
+  const dbg1 = {};
+  const a1 = extractLodgifyAddons(b, dbg1);
+  Logger.log(`① から取り出せたアドオン: ${a1.length}件 ` +
+             `${JSON.stringify(dbg1)}`);
+
+  // 2) 個別取得。パラメータ違いで中身が変わることがあるので数パターン試す
+  const variants = [
+    { label: 'そのまま',                 url: `${CONFIG.LODGIFY.API_BASE}/${b.id}` },
+    { label: 'includeQuoteDetails=true', url: `${CONFIG.LODGIFY.API_BASE}/${b.id}?includeQuoteDetails=true` },
+    { label: 'includeTransactions=true', url: `${CONFIG.LODGIFY.API_BASE}/${b.id}?includeTransactions=true` },
+  ];
+
+  let best = null;
+  variants.forEach(v => {
+    let res;
+    try {
+      res = UrlFetchApp.fetch(v.url, {
+        method: 'get',
+        headers: { 'X-ApiKey': apiKey, 'accept': 'application/json' },
+        muteHttpExceptions: true,
+      });
+    } catch (e) {
+      Logger.log(`② 個別取得 (${v.label}) 失敗: ${e.message || e}`);
+      return;
+    }
+    const code = res.getResponseCode();
+    if (code !== 200) {
+      Logger.log(`② 個別取得 (${v.label}) HTTP ${code}: ` +
+                 res.getContentText().substring(0, 200));
+      return;
+    }
+    let o;
+    try { o = JSON.parse(res.getContentText()); } catch (e) {
+      Logger.log(`② 個別取得 (${v.label}) JSON parse 失敗`); return;
+    }
+    const dbg = {};
+    const a = extractLodgifyAddons(o, dbg);
+    Logger.log(`② 個別取得 (${v.label}) OK / キー数 ${Object.keys(o).length} / ` +
+               `アドオン ${a.length}件 ${JSON.stringify(dbg)}`);
+    if (!best || a.length > best.addons.length) best = { v: v, obj: o, addons: a };
+    Utilities.sleep(300);
+  });
+
+  if (!best) {
+    Logger.log('!! 個別取得がすべて失敗しました。一覧取得の JSON だけで判断してください。');
+    return;
+  }
+
+  logLongLines_(`② 個別取得 (${best.v.label}) の生JSON`, JSON.stringify(best.obj, null, 1));
+
+  // 3) 差分: 個別取得にしか無いキー
+  const k1 = Object.keys(b);
+  const k2 = Object.keys(best.obj);
+  const onlyDetail = k2.filter(k => k1.indexOf(k) < 0);
+  const onlyList   = k1.filter(k => k2.indexOf(k) < 0);
+  Logger.log(`③ 個別取得にしか無いキー: ${onlyDetail.length ? onlyDetail.sort().join(', ') : '(なし)'}`);
+  Logger.log(`③ 一覧取得にしか無いキー: ${onlyList.length ? onlyList.sort().join(', ') : '(なし)'}`);
+
+  Logger.log('\n=== 読み方 ===');
+  if (a1.length) {
+    Logger.log('① でアドオンが取れています。取り込めていないなら原因は別 ' +
+               '(部屋未解決 / ステータス / バッチ未実行) です。');
+  } else if (best.addons.length) {
+    Logger.log(`★ ① では0件、② (${best.v.label}) では ${best.addons.length}件。`);
+    Logger.log('  → 一覧取得にはアドオンが含まれていません。個別取得を足す必要があります。');
+  } else {
+    Logger.log('★ ①②どちらでも0件でした。上の生JSONにアドオンらしき項目があるか探してください。');
+    Logger.log('  あれば、その配列名を CONFIG.LODGIFY.ADDONS.KEYS に足せば動きます。');
+    Logger.log('  無ければ、この API ではアドオンを取得できないため Lodgify サポートへ。');
+  }
+}
+
+/**
+ * 長い文字列をログに分割して出す。
+ * Apps Script の実行ログは1行が長すぎると途中で切られるため。
+ */
+function logLongLines_(label, text, chunkSize, maxTotal) {
+  const chunk = chunkSize || 1500;
+  const max   = maxTotal || 20000;
+  const s = String(text == null ? '' : text);
+  Logger.log(`\n--- ${label} (${s.length} 文字) ---`);
+  const body = (s.length > max) ? s.substring(0, max) : s;
+  for (let i = 0; i < body.length; i += chunk) {
+    Logger.log(body.substring(i, i + chunk));
+  }
+  if (s.length > max) Logger.log(`... (以降 ${s.length - max} 文字を省略)`);
+}
+
+/**
+ * メニュー用: 直近に作られた予約の生レスポンスを出す。
+ * 「いま入れたテスト予約」を見たいときはこれが速い。
+ */
+function dumpLatestLodgifyBookingJson() {
+  const apiKey = getLodgifyApiKey();
+  if (!apiKey) { Logger.log('APIキー未設定。'); return; }
+  const items = fetchLodgifyBookings(apiKey);
+  if (!items.length) { Logger.log('予約が0件です。'); return; }
+  // id が大きいほど新しい
+  const latest = items.slice().sort((x, y) => Number(y.id) - Number(x.id))[0];
+  Logger.log(`直近の予約: id=${latest.id} ${fmtDate(latest.arrival)} ` +
+             `${(latest.guest && latest.guest.name) || '-'}`);
+  dumpLodgifyBookingJson(latest.id);
+}

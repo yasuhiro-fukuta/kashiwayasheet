@@ -337,6 +337,7 @@ function onOpen() {
     .addItem('🔍 Lodgify レスポンス確認',            'dumpLodgifyBookings')
     .addItem('🍱 Lodgify アドオン確認',              'dumpLodgifyAddons')
     .addItem('🏠 一棟貸しの設定・取込確認',           'dumpHouseRentals')
+    .addItem('🧾 直近予約の生レスポンスを見る',        'dumpLatestLodgifyBookingJson')
     .addItem('🩺 直予約・人数の突合診断',            'diagnoseLodgifyMatch')
     .addSeparator()
     .addItem('🎨 条件付き書式を設定 (Options)',       'setupConditionalFormatting')
