@@ -16,6 +16,10 @@
  *   - special … 特シート (特別清掃タスク) 全件 + 未完了判定
  *   - staff   … Staff シートの有効な担当者名 (照合用の完全一致表記)
  *
+ *  ?part=menu を付けると、上記の代わりに「メニュー」シートの
+ *  食事料金表だけを返す (menu)。ゲスト向けの料金回答にも使うため、
+ *  宿泊者名などを含む board はこのモードでは一切返さない。
+ *
  *  ── セットアップ (1回だけ) ──────────────────────────────
  *   1. エディタ ⚙ プロジェクトの設定 → スクリプトプロパティ に
  *        WEB_API_TOKEN = (長いランダム文字列)
@@ -39,7 +43,15 @@ function doGet(e) {
     return jsonOut_({ error: 'unauthorized' });
   }
 
+  const part = e && e.parameter ? String(e.parameter.part || '') : '';
+
   try {
+    if (part === 'menu') {
+      return jsonOut_({
+        generatedAt: Utilities.formatDate(new Date(), CONFIG.TZ, 'yyyy-MM-dd HH:mm'),
+        menu: readMenuSheet_(),
+      });
+    }
     return jsonOut_({
       generatedAt: Utilities.formatDate(new Date(), CONFIG.TZ, 'yyyy-MM-dd HH:mm'),
       today: Utilities.formatDate(new Date(), CONFIG.TZ, 'yyyy-MM-dd'),
@@ -130,6 +142,36 @@ function readSpecialSheet_() {
       assignee: tanto,
       doneDate: done,
       pending: !tanto && !done,
+    });
+  });
+  return out;
+}
+
+/**
+ * メニューシート (食事料金表)。E列「有効」が FALSE の行は返さない。
+ * 価格は表示文字列から数字だけを拾う ("¥8,000" でも "8000" でも可)。
+ */
+function readMenuSheet_() {
+  const sh = SpreadsheetApp.getActive().getSheetByName(CONFIG.SHEET.MENU);
+  if (!sh) return [];
+  const last = sh.getLastRow();
+  if (last < 2) return [];
+
+  const rows = sh.getRange(2, 1, last - 1, 6).getDisplayValues();
+  const out = [];
+  rows.forEach(r => {
+    const name = String(r[0] || '').trim();
+    if (!name) return;
+    const active = String(r[4] || '').trim().toUpperCase();
+    if (active === 'FALSE') return;
+    const price = Number(String(r[3] || '').replace(/[^0-9.]/g, ''));
+    if (!price) return;
+    out.push({
+      name: name,
+      category: String(r[1] || '').trim(),
+      persons: String(r[2] || '').trim(),
+      price: price,
+      note: String(r[5] || '').trim(),
     });
   });
   return out;

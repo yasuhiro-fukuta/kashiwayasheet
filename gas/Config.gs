@@ -58,6 +58,7 @@ const CONFIG = {
     CLEAN_OVERRIDE: 'CleaningOverride',   // 手動入力・GASは読むだけ
     STAFF:          'Staff',              // 担当者一覧 (v2.11 追加・追記のみ)
     ISSUES:         '指摘事項',            // 手動入力の矛盾 (v2.13 追加・追記のみ)
+    MENU:           'メニュー',            // 食事料金表。手動管理・チャットボットの料金の正 (MenuSheet.gs)
   },
 
   // 指摘事項シートの列 (人が見て直す)
