@@ -215,17 +215,65 @@ function normalizeLodgifyAddon(item, path, trusted) {
   // 再帰走査で拾った候補は、食事と判断できた物だけ採用する。
   if (!trusted && !isMeal) return null;
 
+  //  ★個数は API から返ってこない (v2.16)。
+  //    addon_items は {type, amount, description} だけで、
+  //    個数は金額に畳み込まれている。金額÷単価で逆算する。
+  const q = resolveAddonQuantity(name, qty, price);
+
   return {
     rawName:   name,
     cleanName: cleanName || name,
-    qty:       qty > 0 ? qty : 1,
+    qty:       q.qty,
+    qtySrc:    q.src,          // 'API' / '逆算' / '不明'
     price:     price,
-    portion:   parseAddonPortion(name, qty),
+    portion:   parseAddonPortion(name, q.qty),
     isMeal:    isMeal,
     mealLabel: meal ? meal.label : '',
     mealOrder: meal && meal.order != null ? meal.order : 899,
     path:      path || '',
   };
+}
+
+/**
+ * アドオンの個数を決める。
+ *
+ *  1. API が個数を返していればそれを使う (いまは返ってこない)
+ *  2. CONFIG.LODGIFY.ADDONS.ADDON_UNITS に単価があれば 金額÷単価 で逆算
+ *  3. どちらも駄目なら 1 とし、'不明' を立てる
+ *     → 食事サマリに「⚠個数未確認(¥金額)」が付く。
+ *       黙って1人前にすると発注漏れに直結するため、必ず人に見せる。
+ *
+ * @return {{qty:number, src:string}}
+ */
+function resolveAddonQuantity(name, qtyFromApi, price) {
+  if (qtyFromApi > 0) return { qty: qtyFromApi, src: 'API' };
+
+  const amount = numOrZero(price);
+  if (amount <= 0) return { qty: 1, src: 'API' };   // 金額が無いなら判断材料なし
+
+  const unit = lookupAddonUnitPrice(name);
+  if (unit > 0) {
+    const raw = amount / unit;
+    const n   = Math.round(raw);
+    const tol = (CONFIG.LODGIFY.ADDONS.UNIT_TOLERANCE != null)
+      ? CONFIG.LODGIFY.ADDONS.UNIT_TOLERANCE : 0.02;
+    if (n >= 1 && Math.abs(raw - n) <= tol) return { qty: n, src: '逆算' };
+    // 単価と合わない = 値段が変わったか別商品。黙って丸めない。
+    dlog(`アドオンの個数を逆算できない: "${name}" 金額${amount} ÷ 単価${unit} = ${raw}`);
+    return { qty: 1, src: '不明' };
+  }
+
+  return { qty: 1, src: '不明' };
+}
+
+/** description に当たる単価を CONFIG から引く (上から順、最初に当たったもの) */
+function lookupAddonUnitPrice(name) {
+  const list = (CONFIG.LODGIFY.ADDONS && CONFIG.LODGIFY.ADDONS.ADDON_UNITS) || [];
+  const s = String(name == null ? '' : name);
+  for (const u of list) {
+    if (u && u.test && u.test.test(s)) return numOrZero(u.unit);
+  }
+  return 0;
 }
 
 /** "Dinner - Chicken Hot Pot for 3" → "Chicken Hot Pot for 3" */
@@ -292,10 +340,14 @@ function lodgifyAddonSummaries(addons) {
     if (a.isMeal) {
       const label = a.mealLabel || a.cleanName;
       if (!mealByLabel[label]) {
-        mealByLabel[label] = { label: label, order: a.mealOrder, portion: 0, price: 0 };
+        mealByLabel[label] = {
+          label: label, order: a.mealOrder, portion: 0, price: 0, unsure: 0,
+        };
       }
       mealByLabel[label].portion += a.portion;
       mealByLabel[label].price   += a.price;
+      // 個数を確定できなかったものは金額を添えて人に判断させる
+      if (a.qtySrc === '不明') mealByLabel[label].unsure += a.price;
       // 同じ料理で order が違う定義に当たった場合は小さい方を採る
       if (a.mealOrder < mealByLabel[label].order) mealByLabel[label].order = a.mealOrder;
     } else if (CONFIG.LODGIFY.ADDONS.NON_MEAL_TO_OPTION) {
@@ -306,12 +358,14 @@ function lodgifyAddonSummaries(addons) {
   const meals = Object.keys(mealByLabel).map(k => mealByLabel[k]);
   meals.sort((x, y) => (x.order - y.order) || (x.label < y.label ? -1 : 1));
 
+  const yen = (n) => `¥${Number(n).toLocaleString('en-US')}`;
   const mealStr = meals.map(m => {
-    let entry = `${m.label}(${m.portion}人前)`;
-    if (CONFIG.MEAL_SHOW_PRICE && m.price > 0) {
-      entry = `${m.label}(${m.portion}人前 ¥${Number(m.price).toLocaleString('en-US')})`;
-    }
-    return entry;
+    let inner = `${m.portion}人前`;
+    if (CONFIG.MEAL_SHOW_PRICE && m.price > 0) inner += ` ${yen(m.price)}`;
+    //  ★個数を確定できなかった分があることを必ず見せる。
+    //    黙って1人前で出すと、そのまま発注漏れになる。
+    if (m.unsure > 0) inner += `⚠個数未確認(${yen(m.unsure)})`;
+    return `${m.label}(${inner})`;
   }).join(', ');
 
   return { meal: mealStr, option: opts.join(', ') };
@@ -819,4 +873,141 @@ function dumpLatestLodgifyBookingJson() {
   Logger.log(`直近の予約: id=${latest.id} ${fmtDate(latest.arrival)} ` +
              `${(latest.guest && latest.guest.name) || '-'}`);
   dumpLodgifyBookingJson(latest.id);
+}
+
+
+// ============================================================
+//  4. 個別取得によるアドオンの補完 (v2.16)
+// ============================================================
+
+/**
+ * 一覧取得の結果にアドオンを補う。
+ *
+ *  ★一覧取得 GET /bookings では quote.addon_items が null で返る。
+ *    アドオンは個別取得 GET /bookings/{id} でしか取れない。
+ *    (2026-09-27 に実レスポンスで確認)
+ *
+ *  全件に個別取得をかけると180回以上叩くことになるので、
+ *  一覧側の subtotals.addons を使って対象を絞る:
+ *    ・subtotals.addons が 0 → アドオン無しと確定。取得しない
+ *    ・前回保存したアドオンの合計金額と一致 → 変化なし。取得しない
+ *    ・それ以外だけ個別取得する
+ *  定常状態では追加の API 呼び出しはほぼ0になる。
+ *
+ * 補完結果は b.__addons に入れる (normalizeLodgifyBooking が使う)。
+ *
+ * @param {Array<Object>} raw          一覧取得の生 booking 配列 (破壊的に書き換える)
+ * @param {string} apiKey
+ * @param {Object} prevByBookingId     {予約ID: {total:number, addons:Array}}
+ */
+function enrichLodgifyAddons(raw, apiKey, prevByBookingId) {
+  const res = { candidates: 0, fetched: 0, cached: 0, failed: 0, skipped: 0, none: 0 };
+  const A = (CONFIG.LODGIFY && CONFIG.LODGIFY.ADDONS) || {};
+  if (!A.ENABLED || A.DETAIL_FETCH === false) return res;
+
+  const prev = prevByBookingId || {};
+  const max  = A.DETAIL_MAX_FETCH || 30;
+
+  raw.forEach(b => {
+    if (!b || typeof b !== 'object') return;
+
+    //  subtotals.addons が読めない形のレスポンスには手を出さない。
+    //  (__addons を触らなければ従来どおり b 自身から取り出す)
+    const sub = b.subtotals || b.Subtotals;
+    if (!sub || !('addons' in sub || 'addOns' in sub)) return;
+
+    const total = numOrZero(('addons' in sub) ? sub.addons : sub.addOns);
+    if (total <= 0) { b.__addons = []; res.none++; return; }   // アドオン無しで確定
+
+    res.candidates++;
+    const id = String(b.id || b.Id || '');
+    const p  = id ? prev[id] : null;
+    if (p && p.addons && p.addons.length && Math.abs(p.total - total) < 0.5) {
+      b.__addons = p.addons;
+      res.cached++;
+      return;
+    }
+
+    if (res.fetched >= max) {
+      res.skipped++;
+      return;   // __addons を立てない = 今回は取り込まない (次のバッチで再挑戦)
+    }
+
+    const detail = fetchLodgifyBookingDetail(apiKey, id);
+    res.fetched++;
+    if (!detail) { res.failed++; return; }
+    b.__addons = extractLodgifyAddons(detail);
+  });
+
+  if (res.candidates || res.fetched) {
+    dlog(`アドオンの個別取得: 対象 ${res.candidates}件 ` +
+         `(取得 ${res.fetched} / 前回分を再利用 ${res.cached} / ` +
+         `失敗 ${res.failed} / 上限で見送り ${res.skipped})`);
+  }
+  return res;
+}
+
+/**
+ * 予約1件の個別取得。失敗しても例外は投げない (1件の失敗で同期全体を止めない)。
+ * @return {Object|null}
+ */
+function fetchLodgifyBookingDetail(apiKey, bookingId) {
+  const id = String(bookingId || '').trim();
+  if (!id) return null;
+
+  const url = `${CONFIG.LODGIFY.API_BASE}/${encodeURIComponent(id)}`;
+  let res;
+  try {
+    res = UrlFetchApp.fetch(url, {
+      method: 'get',
+      headers: { 'X-ApiKey': apiKey, 'accept': 'application/json' },
+      muteHttpExceptions: true,
+    });
+  } catch (e) {
+    Logger.log(`個別取得に失敗 id=${id}: ${e.message || e}`);
+    return null;
+  }
+
+  const code = res.getResponseCode();
+  if (code !== 200) {
+    Logger.log(`個別取得 HTTP ${code} id=${id}: ${res.getContentText().substring(0, 200)}`);
+    return null;
+  }
+
+  Utilities.sleep(250);   // レート制限対策
+  try {
+    return JSON.parse(res.getContentText());
+  } catch (e) {
+    Logger.log(`個別取得の JSON を読めない id=${id}`);
+    return null;
+  }
+}
+
+/**
+ * LodgifyBookings に保存済みのアドオンを 予約ID 単位で拾う。
+ * 個別取得を省けるかの判定 (合計金額の突合) に使う。
+ *
+ * @param {Array<Array>} existing ヘッダーを除いた行の配列
+ * @return {Object} {予約ID: {total:number, addons:Array}}
+ */
+function collectStoredAddons(existing) {
+  const C = CONFIG.COL_LDG;
+  const out = {};
+  (existing || []).forEach(row => {
+    const id = String(row[C.BOOKING_ID - 1] == null ? '' : row[C.BOOKING_ID - 1])
+      .trim().replace(/\.0+$/, '');
+    if (!id) return;
+    const raw = row[C.ADDONS - 1];
+    if (!raw) return;
+
+    let addons;
+    try { addons = JSON.parse(String(raw)); } catch (e) { return; }
+    if (!Array.isArray(addons) || !addons.length) return;
+
+    const total = addons.reduce((sum, a) => sum + numOrZero(a && a.price), 0);
+    //  1予約が複数行 (複数部屋) に分かれている場合は、
+    //  アドオンが載っている行 = 先頭の部屋の行を採る
+    if (!out[id] || total > out[id].total) out[id] = { total: total, addons: addons };
+  });
+  return out;
 }

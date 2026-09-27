@@ -253,7 +253,58 @@ Lodgify API ─ syncLodgifyBookings()      → LodgifyBookings T列 (予約時�
 - **消えたアドオンは論理削除。** 物理削除しないので過去実績が残る。
   再び現れたら「削除」を外して復活させる。
 
-### ★フィールド名が未確定
+### ★アドオンは個別取得でしか取れない (2026-09-27 に確定)
+
+実レスポンスで確認した結果:
+
+| 経路 | `quote.addon_items` |
+|---|---|
+| 一覧取得 `GET /v2/reservations/bookings` | **`null`**（取れない） |
+| 個別取得 `GET /v2/reservations/bookings/{id}` | 入っている |
+
+`includeQuoteDetails=true` / `includeTransactions=true` を付けても
+一覧側は変わらない。そこで **`subtotals.addons` で対象を絞ってから
+個別取得する** (`enrichLodgifyAddons`)。
+
+- `subtotals.addons` が 0 → アドオン無しで確定。取得しない
+- 前回保存したアドオンの合計金額と一致 → 変化なし。取得しない
+- それ以外だけ個別取得（1バッチ最大 `DETAIL_MAX_FETCH` 件）
+
+→ 定常状態では追加の API 呼び出しはほぼ0。
+
+アドオン1件の形はこう:
+
+```json
+{ "type": "AddOn", "amount": 4500,
+  "description": "Breakfast — Ochazuke risotto and Miso soup with pickles for 1" }
+```
+
+### ★★個数が返ってこない — 金額から逆算する
+
+上のとおり `addon_items` は **`type` / `amount` / `description` だけ**で、
+**個数を返さない**。チェックアウト画面では `¥1,500 × 3` だったものが、
+API では `amount: 4500` に畳み込まれている。
+
+`description` の `for 1` だけを読むと **1人前**になり、
+**朝食を3人分ではなく1人分しか発注しない**ことになる。
+
+→ **個数 = 金額 ÷ 単価** で逆算する。単価は
+`CONFIG.LODGIFY.ADDONS.ADDON_UNITS` に書く（`description` に当てる正規表現）。
+細かいもの（`for 3` など）を先に書くこと。上から順に最初に当たったものを使う。
+
+```
+"…Ochazuke… for 1"      ¥4,500 ÷ ¥1,500 = 3個 → for 1 × 3個 = 3人前
+"Chicken Hot Pot for 3" ¥8,000 ÷ ¥8,000 = 1個 → for 3 × 1個 = 3人前
+```
+
+**単価が未設定 / 金額が単価で割り切れない場合は、黙って1人前にしない。**
+食事サマリに `⚠個数未確認(¥7,000)` を付けて人に判断させる。
+発注漏れに直結するため、ここは必ず見せる方に倒してある。
+
+★アドオンの値段を変えたら `ADDON_UNITS` も直すこと。
+直し忘れは `⚠個数未確認` として表に出る（黙って壊れない）。
+
+### ★フィールド名について
 
 Lodgify の公開ドキュメントにアドオンの項目が無く、
 実レスポンスで確かめる以外の確認手段が無かった。

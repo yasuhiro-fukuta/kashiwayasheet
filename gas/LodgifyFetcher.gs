@@ -62,6 +62,27 @@ function syncLodgifyBookings(now) {
 
   const raw = fetchLodgifyBookings(apiKey);
 
+  //  ★シートを先に読む (v2.16)。
+  //    アドオンは一覧取得では取れず、個別取得が必要。
+  //    前回保存したアドオンの合計と subtotals.addons を突き合わせて、
+  //    変化していない予約は個別取得を省くため、
+  //    正規化より前に保存済みの値が要る。
+  const sh0 = ensureLodgifySheet();
+  const last0 = sh0.getLastRow();
+  const stored = (last0 > 1)
+    ? sh0.getRange(2, 1, last0 - 1, CONFIG.LDG_WIDTH).getValues()
+    : [];
+
+  try {
+    const ax = enrichLodgifyAddons(raw, apiKey, collectStoredAddons(stored));
+    if (ax.fetched || ax.failed) {
+      dlog(`アドオン補完: 個別取得 ${ax.fetched}件 / 再利用 ${ax.cached}件 / ` +
+           `失敗 ${ax.failed}件 / 見送り ${ax.skipped}件`);
+    }
+  } catch (e) {
+    Logger.log(`アドオンの補完に失敗 (処理は続行): ${e.stack || e}`);
+  }
+
   const skipped = {};
   const items = [];
   raw.forEach(b => {
@@ -79,12 +100,12 @@ function syncLodgifyBookings(now) {
          `(VALID_STATUS = ${JSON.stringify(CONFIG.LODGIFY.VALID_STATUS)})`);
   }
 
-  const sh = ensureLodgifySheet();
+  const sh = sh0;
   const C = CONFIG.COL_LDG;
   const width = CONFIG.LDG_WIDTH;
 
-  const last = sh.getLastRow();
-  const existing = (last > 1) ? sh.getRange(2, 1, last - 1, width).getValues() : [];
+  // 上で読んだものをそのまま使う (個別取得の間にシートは変わらない)
+  const existing = stored;
 
   // 既存行のキー → 行インデックス (0始まり)
   //
@@ -272,9 +293,12 @@ function normalizeLodgifyBooking(b, skipped) {
   //  予約時オプション (アドオン) は予約単位で、部屋単位ではない。
   //  1予約で2部屋押さえている場合にどちらの部屋の食事かは判らないので、
   //  先頭の部屋の行だけに載せる。両方に載せると食事が二重に発注される。
+  //  ★__addons は enrichLodgifyAddons() が個別取得で入れたもの (v2.16)。
+  //    一覧取得のレスポンスでは quote.addon_items が null で返るため、
+  //    b 自身から取り出しても常に0件になる。
   let addons = [];
   try {
-    addons = extractLodgifyAddons(b);
+    addons = (b.__addons !== undefined) ? b.__addons : extractLodgifyAddons(b);
   } catch (e) {
     Logger.log(`アドオンの取り出しに失敗 (処理は続行) id=${b.id}: ${e.stack || e}`);
   }
