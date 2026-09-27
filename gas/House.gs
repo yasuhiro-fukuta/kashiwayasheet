@@ -236,14 +236,54 @@ function dumpHouseRentals() {
                (sp.over ? `  ${H.NOTE_OVER}(+${sp.over})` : ''));
   }
 
+  //  ★ここは API ではなく LodgifyBookings シートを読む。
+  //    ID を登録してもバッチを回すまではシートの部屋が空欄のままなので、
+  //    「0件」の原因にバッチ未実行が含まれる。切り分けられるように
+  //    部屋が空欄の行数も数えて出す。
   const bookings = loadLodgifyBookings().filter(b => isHouseRoom(b.room));
   Logger.log(`\n=== LodgifyBookings の一棟貸し: ${bookings.length}件 ===`);
+  Logger.log('(このシートはバッチが書く。API を直接見ているのではない)');
   bookings.forEach(b => {
     const sp = splitHouseGuests(b.people);
     Logger.log(`  ${b.checkin}→${b.checkout} ${b.name || '(氏名なし)'} ${b.people}名 → ` +
                H.FLOORS.map(f => `${f} ${sp.floors[f]}名`).join(' / '));
   });
+
   if (!bookings.length) {
-    Logger.log('  0件。ROOM_MAP の ID か、そもそも予約が無いかのどちらかです。');
+    const unresolved = countLodgifyRowsWithoutRoom_();
+    Logger.log('  0件でした。原因は次のどれかです。');
+    if (unresolved > 0) {
+      Logger.log(`   ★1) バッチ未実行。部屋が空欄の行が ${unresolved} 件あります。`);
+      Logger.log('      → 「🔄 バッチ実行」か「🏨 Lodgify取得だけ実行」を回せば解決されます。');
+    } else {
+      Logger.log('    1) バッチ未実行 … ではありません (部屋が空欄の行は0件)。');
+    }
+    Logger.log('    2) ROOM_MAP の ID 違い … 「🔍 Lodgify レスポンス確認」で');
+    Logger.log('       「部屋を解決できなかった生値」が出ないか確認してください。');
+    Logger.log('    3) そもそも一棟貸しの予約が無い (ステータスが Booked 以外だと');
+    Logger.log(`       取り込まれません。VALID_STATUS = ${JSON.stringify(CONFIG.LODGIFY.VALID_STATUS)})`);
   }
+}
+
+/**
+ * LodgifyBookings で部屋が解決できていない行 (論理削除を除く) を数える。
+ * 「ID は登録したがバッチをまだ回していない」を見分けるため。
+ */
+function countLodgifyRowsWithoutRoom_() {
+  const sh = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(CONFIG.SHEET.LODGIFY);
+  if (!sh) return 0;
+  const last = sh.getLastRow();
+  if (last <= 1) return 0;
+
+  const C = CONFIG.COL_LDG;
+  const width = Math.min(CONFIG.LDG_WIDTH, sh.getLastColumn());
+  const vals = sh.getRange(2, 1, last - 1, width).getValues();
+
+  let n = 0;
+  vals.forEach(row => {
+    if (row[C.DELETED_FLAG - 1] === '削除') return;
+    if (String(row[C.ROOM - 1] || '').trim()) return;
+    n++;
+  });
+  return n;
 }
