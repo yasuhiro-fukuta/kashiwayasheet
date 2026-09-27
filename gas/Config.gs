@@ -279,7 +279,12 @@ const CONFIG = {
       '793801': '2F',
       '860944': '1F',
       '860952': '2F',
-      // '______': '一棟',   ← Vacation-House-Rental の room_type_id / property_id
+      //  917713 = Vacation-House-Rental (一棟貸し)。
+      //    2026-09-27 に実レスポンスで確定 (dumpLodgifyBookings の
+      //    「部屋を解決できなかった生値」に出た値)。
+      //    この予約は CleaningBoard の行にはならず、
+      //    expandHouseStays() が 1F / 2F の2行に展開する。
+      '917713': '一棟',
     },
 
     //  ★直予約の判定 (v2.10)
