@@ -407,6 +407,19 @@ Lodgify ─ 一棟貸し 5名 2026-10-20→22
 `べ`(C列) は手動列なので GAS は書かない。代わりに **F列「泊人」にその階で寝る人数**が
 入るので、`べ` はそれに合わせればよい (矛盾チェックの `setsMismatch` がそのまま効く)。
 
+### キャンセルの検出 (v2.19)
+
+**`status` だけで判定しない。** 実レスポンスには次の3つがある。
+
+```json
+"status": "Booked", "canceled_at": null, "is_deleted": false, "is_unavailable": false
+```
+
+キャンセルしても `status` が `Booked` のまま `canceled_at` だけ入るケースがあり、
+`status` しか見ていないと**清掃ボードから予約が消えない**。
+実際に Booking.com 経由の一棟貸しをキャンセルしたのに行が残る事象が出た。
+`canceled_at` / `is_deleted` / `is_unavailable` のどれかが立っていれば予約ではない。
+
 ### 売止 (Closed period) の扱い
 
 2つ手当てしてある。
@@ -533,7 +546,11 @@ M列の曜日 `=WEEKDAY(D2,2)` も1日ずれる）。
   まず `dumpLodgifyAddons()` を実行して確認すること (上記参照)。
 - 1予約で2部屋押さえた予約のアドオンは先頭の部屋にだけ載る。
   どちらの部屋の食事かは API から判らないため。
-- 一棟貸しは **Lodgify 経由でしか取れない**。`CONFIG.ICAL_SOURCES` は
-  1F / 2F の4本だけで、一棟貸しの iCal は登録していない。
-  Booking.com / Airbnb にも一棟貸しを出すなら iCal URL の追加が要る。
+- 一棟貸しの iCal を登録していない。`CONFIG.ICAL_SOURCES` は 1F / 2F の
+  4本だけ。**一棟貸しは Booking.com にも出しているので**、OTA 経由の
+  一棟貸し予約は Lodgify API からしか取れない。
+  → その夜は iCal に絶対に現れないため「⚠iCal未掲載」が毎回誤報になる。
+  `hasIcalSourceFor()` で出し分けて抑止してある (v2.19)。
+  **一棟貸しの iCal URL を `CONFIG.ICAL_SOURCES` に足せば**、
+  警告は自動的に意味を取り戻し、キャンセルも iCal 経由で検知できるようになる。
 - 一棟貸しの `べ`(C列) は手動。F列「泊人」に階ごとの人数が入るので、それに合わせる。

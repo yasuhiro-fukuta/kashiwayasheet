@@ -273,6 +273,22 @@ function normalizeLodgifyBooking(b, skipped) {
     return [];
   }
 
+  //  ★キャンセル済みを status だけで判定しない (v2.19)。
+  //    実レスポンスには canceled_at と is_deleted がある。
+  //    キャンセルしても status が "Booked" のまま canceled_at だけ
+  //    入るケースがあると、status しか見ていないコードは
+  //    取り込み続けてしまう (= 清掃ボードから消えない)。
+  //    実際に Booking.com 経由の一棟貸しをキャンセルしたのに
+  //    行が残る事象が出た。どちらか一方でも立っていれば予約ではない。
+  if (b.canceled_at || b.cancelled_at || b.canceledAt || b.cancelledAt) {
+    bump('キャンセル済み(canceled_at)');
+    return [];
+  }
+  if (b.is_deleted === true || b.isDeleted === true) {
+    bump('削除済み(is_deleted)');
+    return [];
+  }
+
   const checkin  = toDate(b.arrival   || b.date_arrival);
   const checkout = toDate(b.departure || b.date_departure);
   if (!checkin || !checkout || isNaN(checkin.getTime()) || isNaN(checkout.getTime())) {

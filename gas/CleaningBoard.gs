@@ -268,9 +268,16 @@ function mergeLodgifyStays(stays, bookings) {
       //   直予約        … 常に「直予約」と明示する (iCal に出ないのが正常)
       //   過去のOTA予約 … 無印。iCal は過去分を配信しないので欠けて当然
       //   未来のOTA予約 … 「iCal未掲載」。iCal 取得の取りこぼしが疑われる
+      //  ★「iCal未掲載」は iCal を登録している部屋にだけ意味がある (v2.19)。
+      //    一棟貸しは CONFIG.ICAL_SOURCES に feed が無いため、
+      //    OTA 経由の予約でも iCal に絶対に現れない。
+      //    そのまま判定すると毎回「取得もれの可能性」と誤報が出る。
+      //    feed を登録したら自動的に警告が復活する。
       let note = '';
       if (b.isDirect)      note = '直予約';
-      else if (ds >= today) note = '⚠iCal未掲載 (取得もれの可能性)';
+      else if (ds >= today && hasIcalSourceFor(b.room)) {
+        note = '⚠iCal未掲載 (取得もれの可能性)';
+      }
 
       cur = newStay({
         room:      b.room,

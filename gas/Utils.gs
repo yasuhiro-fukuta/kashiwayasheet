@@ -168,6 +168,19 @@ function spreadsheetTz() {
   return __SS_TZ__;
 }
 
+/**
+ * その部屋の iCal を CONFIG.ICAL_SOURCES に登録しているか (v2.19)。
+ *
+ * 一棟貸しのように feed を登録していない部屋は、OTA 経由の予約でも
+ * iCal に現れない。「iCal未掲載」の警告はそういう部屋には意味がないので、
+ * この関数で判定して出し分ける。feed を足せば自動的に警告が復活する。
+ */
+function hasIcalSourceFor(room) {
+  const r = String(room == null ? '' : room).trim();
+  if (!r) return false;
+  return (CONFIG.ICAL_SOURCES || []).some(s => String(s.room || '').trim() === r);
+}
+
 function fmtDateTime(d) {
   if (!d) return '';
   const dt = toDate(d);
