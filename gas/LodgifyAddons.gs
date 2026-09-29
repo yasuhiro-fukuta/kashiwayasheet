@@ -359,13 +359,18 @@ function lodgifyAddonSummaries(addons) {
   meals.sort((x, y) => (x.order - y.order) || (x.label < y.label ? -1 : 1));
 
   const yen = (n) => `¥${Number(n).toLocaleString('en-US')}`;
+  //  ★Lodgify のアドオンは宿泊予約と同時に決済済み (v2.20)。
+  //    フォーム経由の食事は当日精算なので、同じ食事列に並んだときに
+  //    見分けられないと現地で二重請求・請求漏れになる。
+  const paid = (CONFIG.LODGIFY.ADDONS.PAID_PREFIX != null)
+    ? CONFIG.LODGIFY.ADDONS.PAID_PREFIX : '';
   const mealStr = meals.map(m => {
     let inner = `${m.portion}人前`;
     if (CONFIG.MEAL_SHOW_PRICE && m.price > 0) inner += ` ${yen(m.price)}`;
     //  ★個数を確定できなかった分があることを必ず見せる。
     //    黙って1人前で出すと、そのまま発注漏れになる。
     if (m.unsure > 0) inner += `⚠個数未確認(${yen(m.unsure)})`;
-    return `${m.label}(${inner})`;
+    return `${paid}${m.label}(${inner})`;
   }).join(', ');
 
   return { meal: mealStr, option: opts.join(', ') };
