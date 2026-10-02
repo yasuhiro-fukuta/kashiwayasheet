@@ -339,6 +339,7 @@ function onOpen() {
     .addItem('🏠 一棟貸しの設定・取込確認',           'dumpHouseRentals')
     .addItem('🧾 直近予約の生レスポンスを見る',        'dumpLatestLodgifyBookingJson')
     .addItem('🩺 直予約・人数の突合診断',            'diagnoseLodgifyMatch')
+    .addItem('📅 予約がいつまで取れているか',          'diagnoseBookingHorizon')
     .addSeparator()
     .addItem('🎨 条件付き書式を設定 (Options)',       'setupConditionalFormatting')
     .addItem('🎨 条件付き書式を設定 (清掃ボード)',    'setupCleaningFormatting')

@@ -154,3 +154,143 @@ function diagnoseOptionGuests(bookings) {
     unresolved.slice(0, 20).forEach(u => Logger.log('    ' + u));
   }
 }
+
+/**
+ * 診断: 予約情報が「いつまで」取れているかを経路ごとに出す (v2.21)。
+ *
+ * 「予約が11月までしか入っていない」ときに、どこで止まっているかを
+ * 一発で切り分けるためのもの。止まり方で原因が違う:
+ *
+ *   ・iCal の最終日が各ソースでほぼ同じ日
+ *       → Booking.com / Airbnb の配信窓。こちらからは伸ばせない
+ *   ・iCal の最終日が部屋ごとにバラバラ
+ *       → 単にその先に予約が無いだけ (窓ではない)
+ *   ・Lodgify には先の予約があるのに清掃ボードに出ていない
+ *       → こちらのバグ。合流処理を見る
+ *   ・Lodgify にも先の予約が無い
+ *       → そもそも売っていない (OTA のカレンダーを開けていない等)
+ *
+ * 書き込みはしない。
+ */
+function diagnoseBookingHorizon() {
+  const today = fmtDate(todayJst());
+  Logger.log(`=== 予約の取得範囲 (今日 ${today}) ===`);
+
+  const monthOf = (d) => String(d || '').substring(0, 7);
+  const tally = (map, key) => { map[key] = (map[key] || 0) + 1; };
+  const showMonths = (label, map) => {
+    const keys = Object.keys(map).sort();
+    if (!keys.length) { Logger.log(`  ${label}: (0件)`); return; }
+    Logger.log(`  ${label}: ` + keys.map(k => `${k}:${map[k]}`).join('  '));
+  };
+
+  // ── 1. iCal (LatestReservations) ───────────────────────────
+  Logger.log('\n--- ① iCal 由来 (LatestReservations) ---');
+  const rSh = getSheet(CONFIG.SHEET.LATEST_RES);
+  const rLast = rSh.getLastRow();
+  const rVals = (rLast > 1) ? rSh.getRange(2, 1, rLast - 1, 8).getValues() : [];
+  const RC = CONFIG.COL_RES;
+
+  const icalMonths = {};
+  const icalMaxBy  = {};   // "booking 1F" → 最終日
+  rVals.forEach(row => {
+    const d = fmtDate(row[RC.CHECKIN - 1]);
+    if (!d) return;
+    tally(icalMonths, monthOf(d));
+    const k = `${String(row[RC.SOURCE - 1] || '?')} ${String(row[RC.ROOM - 1] || '?')}`;
+    if (!icalMaxBy[k] || d > icalMaxBy[k]) icalMaxBy[k] = d;
+  });
+  Logger.log(`  泊数: ${rVals.length}`);
+  showMonths('月別', icalMonths);
+  Object.keys(icalMaxBy).sort().forEach(k =>
+    Logger.log(`    ${k.padEnd(14)} 最終宿泊日 ${icalMaxBy[k]}`));
+
+  const icalMax = Object.keys(icalMaxBy).reduce(
+    (m, k) => (icalMaxBy[k] > m ? icalMaxBy[k] : m), '');
+  if (icalMax) {
+    Logger.log(`  → iCal は ${icalMax} まで (今日から ${daysBetweenStr(today, icalMax)} 日先)`);
+  }
+
+  // ── 2. Lodgify (LodgifyBookings の有効行) ──────────────────
+  Logger.log('\n--- ② Lodgify 由来 (LodgifyBookings) ---');
+  const bookings = loadLodgifyBookings();
+  const ldgMonths = {};
+  let ldgMaxDirect = '', ldgMaxOta = '';
+  bookings.forEach(b => {
+    if (!b.checkin) return;
+    tally(ldgMonths, monthOf(b.checkin));
+    if (b.isDirect) { if (b.checkin > ldgMaxDirect) ldgMaxDirect = b.checkin; }
+    else            { if (b.checkin > ldgMaxOta)    ldgMaxOta    = b.checkin; }
+  });
+  Logger.log(`  有効な予約: ${bookings.length}`);
+  showMonths('月別', ldgMonths);
+  Logger.log(`    直予約 最終チェックイン ${ldgMaxDirect || '(なし)'}`);
+  Logger.log(`    OTA   最終チェックイン ${ldgMaxOta || '(なし)'}`);
+  const ldgMax = (ldgMaxDirect > ldgMaxOta) ? ldgMaxDirect : ldgMaxOta;
+  if (ldgMax) {
+    Logger.log(`  → Lodgify は ${ldgMax} まで (今日から ${daysBetweenStr(today, ldgMax)} 日先)`);
+  }
+
+  // ── 3. CleaningBoard に実際に出ている在室 ──────────────────
+  Logger.log('\n--- ③ 清掃ボードに出ている在室 ---');
+  const cSh = getSheet(CONFIG.SHEET.CLEANING);
+  const CC = CONFIG.COL_CLEAN;
+  const WS = CONFIG.CLEANING.WRITE_START_COL;
+  const cLast = cSh.getLastRow();
+  const cVals = (cLast > 1)
+    ? cSh.getRange(2, WS, cLast - 1, CC.UPDATED_AT - WS + 1).getValues() : [];
+
+  const boardMonths = {};
+  let boardFirst = '', boardLast = '', occupiedMax = '';
+  cVals.forEach(row => {
+    const d = String(row[CC.DATE - WS] || '').trim() || fmtDate(row[CC.DATE - WS]);
+    if (!d) return;
+    if (!boardFirst || d < boardFirst) boardFirst = d;
+    if (d > boardLast) boardLast = d;
+    const state = String(row[CC.STATE - WS] || '').trim();
+    if (state && state !== '空室') {
+      tally(boardMonths, monthOf(d));
+      if (d > occupiedMax) occupiedMax = d;
+    }
+  });
+  Logger.log(`  行の範囲: ${boardFirst} 〜 ${boardLast} (${cVals.length}行)`);
+  Logger.log(`  (CONFIG.CLEANING.DAYS_AHEAD = ${CONFIG.CLEANING.DAYS_AHEAD} 日先まで生成)`);
+  showMonths('在室の月別', boardMonths);
+  Logger.log(`  → 在室が入っている最終日 ${occupiedMax || '(なし)'}`);
+
+  // ── 4. 判定 ───────────────────────────────────────────────
+  Logger.log('\n=== 判定 ===');
+  const icalKeys = Object.keys(icalMaxBy);
+  if (icalKeys.length >= 2) {
+    const ds = icalKeys.map(k => icalMaxBy[k]).sort();
+    const spread = daysBetweenStr(ds[0], ds[ds.length - 1]);
+    if (spread <= 3) {
+      Logger.log(`・iCal の最終日がどのソースでも ${ds[0]} 前後 (差 ${spread} 日)。`);
+      Logger.log('  → 配信側の窓で切られている可能性が高い。こちらからは伸ばせない。');
+    } else {
+      Logger.log(`・iCal の最終日はソースごとに ${ds[0]} 〜 ${ds[ds.length - 1]} とバラバラ。`);
+      Logger.log('  → 窓ではなく「その先に予約が無い」だけ。');
+    }
+  }
+  if (ldgMax && icalMax && ldgMax > icalMax) {
+    Logger.log(`・Lodgify は iCal より先 (${ldgMax}) まで持っている。`);
+    if (occupiedMax && occupiedMax >= ldgMax) {
+      Logger.log('  → 清掃ボードにもそこまで出ている。合流は効いている。');
+    } else {
+      Logger.log(`  !! 清掃ボードは ${occupiedMax} までしか出ていない。合流処理の不具合の疑い。`);
+    }
+  }
+  if (ldgMax && daysBetweenStr(today, ldgMax) < 270) {
+    Logger.log(`・Lodgify 自体が ${daysBetweenStr(today, ldgMax)} 日先までしか予約を持っていない。`);
+    Logger.log('  → 270日先まで欲しいなら、まず OTA 側のカレンダーがそこまで');
+    Logger.log('    開いているか (販売期間の設定) を確認すること。');
+    Logger.log('    予約が存在しなければ、取り込み側を直しても増えない。');
+  }
+}
+
+/** 日付文字列 (yyyy-MM-dd) 同士の日数差 */
+function daysBetweenStr(a, b) {
+  const da = toDate(a), db = toDate(b);
+  if (!da || !db) return 0;
+  return Math.round((db.getTime() - da.getTime()) / 86400000);
+}
