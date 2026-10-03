@@ -243,7 +243,14 @@ function diagnoseBookingHorizon() {
   const boardMonths = {};
   let boardFirst = '', boardLast = '', occupiedMax = '';
   cVals.forEach(row => {
-    const d = String(row[CC.DATE - WS] || '').trim() || fmtDate(row[CC.DATE - WS]);
+    //  ★必ず fmtDate() を通すこと。
+    //    清掃ボードの日付は文字列で書いているが、Sheets が日付値に
+    //    変換して保存するため、読むと Date で返ってくる。
+    //    String(Date) は "Wed Sep 30 2026 16:00:00 GMT+0900" という
+    //    truthy な文字列になるので、|| のフォールバックに到達しない。
+    //    その結果 月別集計が曜日別になり、日付の比較も辞書順になって
+    //    壊れる (実際に壊した)。
+    const d = fmtDate(row[CC.DATE - WS]);
     if (!d) return;
     if (!boardFirst || d < boardFirst) boardFirst = d;
     if (d > boardLast) boardLast = d;
