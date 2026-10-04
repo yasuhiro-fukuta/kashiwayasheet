@@ -11,10 +11,13 @@
  *
  *  返すもの (JSON):
  *   - board   … CleaningBoard の直近35日前〜90日先。
- *               A〜D列(担当・種類・べ) と、質問回答に必要な列だけ。
+ *               A〜D列(担当・種類・べ) と、質問回答に必要な列、
+ *               X列(特別清掃箇所。予定・実績ともここで管理)。
  *               予約番号(M列)・IN/OUT詳細などは返さない。
- *   - special … 特シート (特別清掃タスク) 全件 + 未完了判定
  *   - staff   … Staff シートの有効な担当者名 (照合用の完全一致表記)
+ *
+ *  ※特シートは返さなくなった (2026-10-04)。特別清掃は
+ *    CleaningBoard X列「特別清掃箇所」で管理する運用に変更。
  *
  *  ?part=menu を付けると、上記の代わりに「メニュー」シートの
  *  食事料金表だけを返す (menu)。ゲスト向けの料金回答にも使うため、
@@ -56,7 +59,6 @@ function doGet(e) {
       generatedAt: Utilities.formatDate(new Date(), CONFIG.TZ, 'yyyy-MM-dd HH:mm'),
       today: Utilities.formatDate(new Date(), CONFIG.TZ, 'yyyy-MM-dd'),
       board: readCleaningBoardSlice_(),
-      special: readSpecialSheet_(),
       staff: readActiveStaff_(),
     });
   } catch (err) {
@@ -83,7 +85,8 @@ function readCleaningBoardSlice_() {
   if (last < 2) return [];
 
   const C = CONFIG.COL_CLEAN;
-  const rows = sh.getRange(2, 1, last - 1, C.UPDATED_AT).getDisplayValues();
+  // X列(特別清掃箇所)まで読む。U〜X列は手動領域 (バッチのクリア対象外)
+  const rows = sh.getRange(2, 1, last - 1, C.SPECIAL_SPOT).getDisplayValues();
 
   const DAY = 86400000;
   const now = Date.now();
@@ -98,8 +101,10 @@ function readCleaningBoardSlice_() {
     const cleaner = String(r[C.STAFF_DAY - 1] || '').trim();
     const server  = String(r[C.STAFF_NIGHT - 1] || '').trim();
     const state   = String(r[C.STATE - 1] || '').trim();
+    const specialSpot = String(r[C.SPECIAL_SPOT - 1] || '').trim();
     // 空室でどの担当も入っていない行は返しても意味がないので省く
-    if (state === '空室' && !cleaner && !server) return;
+    // (ただし特別清掃箇所が書かれている行は空室日でも残す)
+    if (state === '空室' && !cleaner && !server && !specialSpot) return;
 
     out.push({
       date: date,                                        // H列 (表示文字列)
@@ -114,34 +119,7 @@ function readCleaningBoardSlice_() {
       guestName: String(r[C.GUEST_NAME - 1] || '').trim(), // L列
       meal: String(r[C.MEAL - 1] || '').trim(),          // R列
       note: String(r[C.NOTE - 1] || '').trim(),          // S列
-    });
-  });
-  return out;
-}
-
-/**
- * 特シート (特別清掃タスク)。
- * 未完了 = A列(対応者) と B列(完了日) がどちらも空。
- */
-function readSpecialSheet_() {
-  const sh = SpreadsheetApp.getActive().getSheetByName('特');
-  if (!sh) return [];
-  const last = sh.getLastRow();
-  if (last < 2) return [];
-
-  const rows = sh.getRange(2, 1, last - 1, 4).getDisplayValues();
-  const out = [];
-  rows.forEach(r => {
-    const naiyo = String(r[3] || '').trim();   // D列 内容
-    if (!naiyo) return;
-    const tanto = String(r[0] || '').trim();   // A列 対応者
-    const done  = String(r[1] || '').trim();   // B列 完了日
-    out.push({
-      task: naiyo,
-      pt: String(r[2] || '').trim(),           // C列 pt
-      assignee: tanto,
-      doneDate: done,
-      pending: !tanto && !done,
+      specialSpot: specialSpot,                          // X列 特別清掃箇所
     });
   });
   return out;
