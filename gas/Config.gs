@@ -829,10 +829,10 @@ const CONFIG = {
       ARRIVAL_PATTERNS: [/IN/],
 
       //  W列「接客半日？」に印が付いている日の掛け率。
-      //  ★この列の意味は契約書に無い。清掃ボードにある列なので
-      //    拾ってはいるが、0.5 は「半日=半額」という素直な読み。
-      //    違う扱いなら HALF_RATE を直すか、HALF_ENABLED を false に。
-      HALF_ENABLED: true,
+      //  ★2026-10 発注者指示により無視する (HALF_ENABLED: false)。
+      //    契約書にこの列の根拠が無いため。
+      //    将来使うことになったら true に戻すだけでよい。
+      HALF_ENABLED: false,
       HALF_RATE:    0.5,
       //  印と見なす値。空欄・FALSE・'-'・'なし' は印なし。
       HALF_TRUE_PATTERNS: [/^TRUE$/i, /^(?:yes|y|o)$/i, /^(?:はい|半日|○|◯|●|✓|✔|レ)$/, /^1$/],
