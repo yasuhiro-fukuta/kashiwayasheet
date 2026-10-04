@@ -87,7 +87,7 @@ function readBoardForPayroll_() {
   const C = CONFIG.COL_CLEAN;
   //  U列(清掃達成率) と V列(清掃やり直した箇所) まで読む。
   //  まだ列が無いシートでも落ちないように実際の列数で止める。
-  const width = Math.min(Math.max(sh.getLastColumn(), C.UPDATED_AT), C.NIGHT_HALF);
+  const width = Math.min(Math.max(sh.getLastColumn(), C.UPDATED_AT), C.SPECIAL_SPOT);
   const rows = sh.getRange(2, 1, last - 1, width).getDisplayValues();
 
   return rows.map(r => ({
@@ -104,6 +104,7 @@ function readBoardForPayroll_() {
     cleanRate: String(r[C.CLEAN_RATE - 1]   || '').trim(),   // U 手動
     cleanRedo: String(r[C.CLEAN_REDO - 1]   || '').trim(),   // V 手動
     nightHalf: String(r[C.NIGHT_HALF - 1]   || '').trim(),   // W 手動
+    spotWork:  String(r[C.SPECIAL_SPOT - 1] || '').trim(),   // X 手動 (金額には効かせない)
   })).filter(r => r.date);
 }
 
@@ -420,6 +421,8 @@ function computeStaffPay(board, deep, month, optionRows, orderSheet) {
         setup:    { count: 0, rooms: 0, days: [], amount: 0, gross: 0, deduction: 0 },
         bonus:    { headcount: 0, excess: 0, lines: [] },
         deep:     { days: [], amount: 0 },
+        memo:     [],   // 作業メモ (V列・X列)。金額には効かせない
+
         checkin:  { a: 0, b: 0, days: [], amount: 0, halfDays: 0, halfCut: 0 },
         total:    0,
       };
@@ -485,10 +488,12 @@ function computeStaffPay(board, deep, month, optionRows, orderSheet) {
       rate:  cut.rate,
       redo:  cut.redoText,
       redoN: cut.redoN,
+      spot:  cut.spotText,
       gross: gross,
       net:   net,
       note:  cut.note,
     });
+    collectWorkMemo_(p, u.date, '清掃', u.rows);
     if (cut.note) {
       warnings.push(`清掃減額: ${u.date} ${u.cleaner} — ${cut.note}`);
     }
@@ -537,9 +542,10 @@ function computeStaffPay(board, deep, month, optionRows, orderSheet) {
         return;
       }
       const p = person(name);
+      collectWorkMemo_(p, date, '徹底清掃', sd.rows);
       p.deep.days.push({
         date: date, pt: CONFIG.PAYROLL.SPECIAL_DAY.BOTH_FLOORS_PT,
-        amount: net, note: cut.note,
+        amount: net, note: cut.note, spot: cut.spotText,
         tasks: [`清掃ボード: 全部屋が特別 (${sd.rows.map(r => r.room).join('+')})`
           + (gross !== net ? ` / 達成率 ${pctP_(cut.rate)} で ${yenP_(gross)}→${yenP_(net)}` : '')],
       });
@@ -921,6 +927,11 @@ function setupShortfall_(rows) {
   const redoTexts = rows.map(r => String(r.cleanRedo || '').trim()).filter(x => x);
   const redoN = rows.reduce((n, r) => n + countRedoItems_(r.cleanRedo), 0);
 
+  //  X列「特別清掃箇所」。やった内容のメモ。★金額には効かせない。
+  const spots = rows
+    .filter(r => String(r.spotWork || '').trim())
+    .map(r => ({ room: r.room, text: String(r.spotWork).trim() }));
+
   let deduction = 0;
   let note = '';
 
@@ -939,6 +950,8 @@ function setupShortfall_(rows) {
     rate:      rate,
     redoText:  redoTexts.join(' / '),
     redoN:     redoN,
+    spots:     spots,
+    spotText:  spots.map(x => `${x.room}: ${x.text}`).join(' / '),
     deduction: Math.min(price, Math.round(deduction)),
     note:      note,
   };
@@ -953,6 +966,25 @@ function isHalfNight_(v) {
   if (!raw) return false;
   if (/^(?:FALSE|no|n|x|-|ー|―|なし|無し)$/i.test(raw)) return false;
   return CONFIG.PAYROLL.CHECKIN.HALF_TRUE_PATTERNS.some(re => re.test(raw));
+}
+
+/**
+ * 作業メモを積む。清掃ボードの V列(やり直した箇所) と X列(特別清掃箇所)。
+ *  ★金額には一切効かせない。請求のときに「何をやったか」がわかるよう
+ *    ログに出すためだけのもの。
+ */
+function collectWorkMemo_(p, date, kind, rows) {
+  if (!CONFIG.PAYROLL.MEMO.ENABLED) return;
+  rows.forEach(r => {
+    const redo = String(r.cleanRedo || '').trim();
+    const spot = String(r.spotWork  || '').trim();
+    if (!redo && !spot) return;
+    p.memo.push({
+      date: date, room: r.room, kind: kind,
+      rate: parseAchieveRate_(r.cleanRate),
+      redo: redo, spot: spot,
+    });
+  });
 }
 
 function pctP_(rate) {
@@ -1020,6 +1052,7 @@ function logStaffPay_(res) {
         if (d.redoN) line += `  やり直し${d.redoN}箇所: ${d.redo}`;
         if (d.note)  line += `  ${d.note}`;
         L.push(line);
+        if (d.spot) L.push(`           特別清掃箇所: ${d.spot}`);
       });
     }
 
@@ -1034,6 +1067,7 @@ function logStaffPay_(res) {
       L.push(`  客室徹底清掃      ${yenP_(p.deep.amount)}`);
       p.deep.days.forEach(d => {
         L.push(`       ${d.date}  ${d.pt}pt → ${yenP_(d.amount)} ${d.note}  [${d.tasks.join(' / ')}]`);
+        if (d.spot) L.push(`           特別清掃箇所: ${d.spot}`);
       });
     }
 
@@ -1052,6 +1086,17 @@ function logStaffPay_(res) {
         const detail = [d.boardMeals, d.optMeals, d.orderMeals]
           .filter(x => x).join('  ///  ');
         if (detail) L.push(`           食事: ${detail}`);
+      });
+    }
+
+    if (P.MEMO.ENABLED && P.MEMO.SUMMARY && p.memo.length) {
+      L.push('  ── 作業メモ (金額には効いていません) ──');
+      p.memo.forEach(m => {
+        const bits = [];
+        if (m.spot) bits.push(`特別清掃: ${m.spot}`);
+        if (m.redo) bits.push(`やり直し: ${m.redo}`);
+        L.push(`       ${m.date} ${m.room} [${m.kind}] 達成率 ${pctP_(m.rate)}`
+          + `  ${bits.join('  /  ')}`);
       });
     }
 
@@ -1083,6 +1128,7 @@ function logStaffPay_(res) {
   L.push(`  「特」シート           : ${P.DEEP.USE_SHEET ? '読む' : '読まない (発注者指示)'}`);
   L.push('  仕出しの判定           : 清掃ボードR列 / LatestOptions / 注文確認票 の'
     + 'いずれか1つでも夕食があれば B');
+  L.push(`  X列(特別清掃箇所)      : ${P.MEMO.ENABLED ? 'メモとしてログに出すだけ (金額には効かせない)' : '見ない'}`);
   L.push(`  特別報酬「その値」     : ${P.BONUS.BASE}`);
   L.push(`  特別報酬の単位         : ${P.BONUS.PER_ROOM ? '部屋ごとに積む' : '日ごとに1回'}`);
   L.push(`  清掃達成率の効かせ方   : ${P.SHORTFALL.RATE_MODE}`
