@@ -868,6 +868,50 @@ const CONFIG = {
     },
   },
 
+  // ── ほなみや注文確認票への転記 v2.22 ───────────────────────
+  //  LatestOptions の内容を、ほなみやさんと共有している
+  //  「柏屋注文確認票」へ一覧として書き出す。
+  //
+  //  ★前提: 転記先は Google スプレッドシート形式でなければならない。
+  //    元ファイルは .xlsx (Excel) で、Apps Script の SpreadsheetApp は
+  //    .xlsx を開けない (openById が例外になる)。
+  //    ほなみやさんに「ファイル → Google スプレッドシートとして保存」で
+  //    変換してもらい、変換後の**新しいID**を Script Properties に入れる。
+  //      setOrderExportTargetId('変換後のID') を1回実行する。
+  //    ※IDはコードに書かない (このリポジトリは公開されている)。
+  //
+  //  ★書き込むのは専用タブ1枚だけ。
+  //    月ごとのカレンダー表 (R8　１０月 など) には絶対に触らない。
+  //    あちらはほなみやさんが手で書く領域。
+  ORDER_EXPORT: {
+    ENABLED: true,
+
+    //  転記先スプレッドシートIDを入れる Script Property のキー
+    PROP_TARGET_ID: 'ORDER_EXPORT_SHEET_ID',
+
+    //  書き込む先のタブ名。無ければ作る。
+    //  ★既存の「R8　9月福田」などに上書きしないよう、別名にしてある。
+    SHEET_NAME: '柏屋連携_食事注文',
+
+    //  対象期間。宿泊日が「当月の1日」〜「翌月の末日」の行だけ書く。
+    //  MONTHS_AHEAD: 1 = 当月 + 翌月
+    MONTHS_AHEAD: 1,
+
+    //  行を書く条件。
+    //   'meal_or_option' … 食事サマリ または オプションサマリ がある行
+    //   'meal_only'      … 食事サマリ がある行だけ
+    //   'all'            … 期間内の全行
+    //  ★既定は 'meal_or_option'。既存の「R8　9月福田」タブに
+    //    泉屋送迎・Eバイク・荷物預けの行も入っていたため。
+    INCLUDE_WHEN: 'meal_or_option',
+
+    //  出力する列の見出し (この順で書く)
+    HEADER: ['宿泊日', '曜日', '部屋', '宿泊者名', '人数', '食事', 'オプション', 'その他要望', '更新'],
+
+    //  見出しの下に入れる注意書き (A列に1行)。空文字にすれば出ない。
+    NOTICE: '※このタブは柏屋のシステムが毎時書き換えます。手で書いた内容は消えます。',
+  },
+
   PROP: {
     LAST_PROCESSED: 'LAST_PROCESSED_AT',
     LAST_OPEN_RUN:  'LAST_OPEN_RUN_AT',
@@ -894,4 +938,28 @@ function setLodgifyApiKey(key) {
   if (!key) throw new Error('キーが空です');
   PropertiesService.getScriptProperties().setProperty(CONFIG.LODGIFY.PROP_KEY, String(key).trim());
   Logger.log('Lodgify API key saved.');
+}
+
+/**
+ * ほなみや注文確認票 (Googleスプレッドシート形式に変換したもの) の
+ * IDを Script Properties に保存する。
+ *
+ *  ★このリポジトリは公開されているため、IDをコードに書かない。
+ *    エディタから一度だけ
+ *      setOrderExportTargetId('1AbC...')
+ *    を実行し、実行後はこの呼び出しを消すこと。
+ *
+ *  IDは変換後ファイルのURLの
+ *    docs.google.com/spreadsheets/d/【ここ】/edit
+ *  の部分。★.xlsx のままのURL (drive.google.com/file/d/...) ではない。
+ */
+function setOrderExportTargetId(id) {
+  if (!id) throw new Error('IDが空です');
+  const clean = String(id).trim();
+  if (/^https?:/i.test(clean)) {
+    throw new Error('URLではなくID部分だけを渡してください (/d/ と /edit の間)');
+  }
+  PropertiesService.getScriptProperties()
+    .setProperty(CONFIG.ORDER_EXPORT.PROP_TARGET_ID, clean);
+  Logger.log('転記先スプレッドシートIDを保存しました。');
 }
