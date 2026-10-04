@@ -671,6 +671,15 @@ function computeStaffPay(board, deep, month, optionRows, orderSheet) {
       + ' (清掃ボードと LatestOptions だけで判定しています)');
   }
 
+  //  内訳はすべて日付順に並べる (シートの行順や集計順に左右されない)
+  const byDate = (a, b) => (a.date || a.label || '') < (b.date || b.label || '') ? -1
+    : ((a.date || a.label || '') > (b.date || b.label || '') ? 1 : 0);
+  Object.keys(people).forEach(n => {
+    people[n].setup.days.sort(byDate);
+    people[n].deep.days.sort(byDate);
+    people[n].checkin.days.sort(byDate);
+  });
+
   // ── 契約の有無で足切り + 合計 ───────────────────────────
   const list = Object.keys(people).map(n => {
     const p = people[n];
@@ -703,6 +712,7 @@ function computeStaffPay(board, deep, month, optionRows, orderSheet) {
   return {
     month:    month,
     people:   list,
+    excluded: countExcludedWork_(board, month),
     warnings: warnings,
     estimate: estimate,
     today:    today,
@@ -739,7 +749,33 @@ function normalizeDoneDate_(v, month) {
 function isIgnoredStaffName_(name) {
   const s = String(name || '').trim();
   if (!s) return true;
-  return CONFIG.STAFF.IGNORE.indexOf(s) >= 0;
+  if (CONFIG.STAFF.IGNORE.indexOf(s) >= 0) return true;
+  //  給料計算から外す名前 (人ではない印など)。
+  //  黙って落とさないよう、除外した分はログの末尾に出す。
+  return (CONFIG.PAYROLL.EXCLUDE_NAMES || []).indexOf(s) >= 0;
+}
+
+/** 除外した名前が実際に何件あったかを数える (ログで見せるため)。 */
+function countExcludedWork_(board, month) {
+  const names = CONFIG.PAYROLL.EXCLUDE_NAMES || [];
+  const out = {};
+  if (!names.length) return out;
+  board.forEach(r => {
+    if (String(r.date).slice(0, 7) !== month) return;
+    [['cleaner', '清掃'], ['server', '接客']].forEach(pair => {
+      const nm = String(r[pair[0]] || '').trim();
+      if (names.indexOf(nm) < 0) return;
+      if (!out[nm]) out[nm] = { 清掃: {}, 接客: {} };
+      out[nm][pair[1]][r.date] = true;
+    });
+  });
+  Object.keys(out).forEach(nm => {
+    out[nm] = {
+      cleanDays: Object.keys(out[nm]['清掃']).length,
+      nightDays: Object.keys(out[nm]['接客']).length,
+    };
+  });
+  return out;
 }
 
 function isSpecialCleanKind_(kind) {
@@ -968,6 +1004,12 @@ function isHalfNight_(v) {
   return CONFIG.PAYROLL.CHECKIN.HALF_TRUE_PATTERNS.some(re => re.test(raw));
 }
 
+/** 達成率を幅をそろえた文字列にする ('95%   ' / '100%  ')。 */
+function padPct_(rate) {
+  const t = pctP_(rate);
+  return t + ' '.repeat(Math.max(1, 6 - t.length));
+}
+
 function pctP_(rate) {
   if (rate === null || rate === undefined) return '未記入';
   return Math.round(rate * 1000) / 10 + '%';
@@ -1017,69 +1059,42 @@ function logStaffPay_(res) {
 
   res.people.forEach(p => {
     L.push('');
-    L.push(`── ${p.name} ${p.contractKnown ? '' : '(CONFIG.PAYROLL.CONTRACTS に未登録 → 全項目を計算)'}`);
+    L.push(`── ${p.name} `);
 
     if (p.setup.count) {
-      L.push(`  客室セットアップ  ${p.setup.count}件 × ${yenP_(P.SETUP.UNIT_PRICE)} = ${yenP_(p.setup.gross)}`
-        + `   (対象行 ${p.setup.rooms}室 / 数え方=${P.SETUP.COUNT_UNIT})`);
-      if (p.setup.deduction) {
-        L.push(`     清掃減額         -${yenP_(p.setup.deduction)}  (達成率の効かせ方=${P.SHORTFALL.RATE_MODE})`);
-      }
-      L.push(`     差引後           ${yenP_(p.setup.amount)}`);
+      L.push(`  客室セットアップ  ${p.setup.count}件 `);
       p.setup.days.forEach(d => {
-        let line = `       ${d.label}  ${d.rooms}  達成率 ${pctP_(d.rate)}`;
-        if (d.gross !== d.net) line += `  ${yenP_(d.gross)} → ${yenP_(d.net)}`;
-        else                   line += `  ${yenP_(d.net)}`;
-        if (d.redoN) line += `  やり直し${d.redoN}箇所: ${d.redo}`;
-        if (d.spotPlain) line += ` ※特別清掃: ${d.spotPlain}`;
-        if (d.note)  line += `  ${d.note}`;
+        let line = `       ${d.label}  ${d.rooms}  達成率 ${padPct_(d.rate)}${yenP_(d.net)}`;
+        if (d.redoN)     line += `  やり直し${d.redoN}箇所`;
+        if (d.spotPlain) line += `  ※特別清掃: ${d.spotPlain}`;
+        if (d.note)      line += `  ${d.note}`;
         L.push(line);
-        if (d.spot) L.push(`           特別清掃箇所: ${d.spot}`);
       });
     }
 
-    if (p.bonus.headcount || p.bonus.excess) {
-      L.push(`  特別報酬          採用=${P.BONUS.BASE}  → ${yenP_(bonusAmount_(p))}`);
-      L.push(`     人数読み(その値=人数)   ${yenP_(p.bonus.headcount)}`);
-      L.push(`     超過読み(その値=4人超過) ${yenP_(p.bonus.excess)}`);
-      p.bonus.lines.forEach(s => L.push(`       ${s}`));
+    if (p.pay.bonus) {
+      L.push(`  特別報酬          ${yenP_(p.pay.bonus)}`);
     }
 
     if (p.deep.days.length) {
-      L.push(`  客室徹底清掃      ${yenP_(p.deep.amount)}`);
+      L.push(`  客室徹底清掃      ${p.deep.days.length}件 `);
       p.deep.days.forEach(d => {
-        L.push(`       ${d.date}  ${d.pt}pt → ${yenP_(d.amount)} ${d.note}`
-          + (d.spotPlain ? ` ※特別清掃: ${d.spotPlain}` : '')
-          + `  [${d.tasks.join(' / ')}]`);
-        if (d.spot) L.push(`           特別清掃箇所: ${d.spot}`);
+        let line = `       ${d.date}  ${d.pt}pt  ${yenP_(d.amount)}`;
+        if (d.spotPlain) line += `  ※特別清掃: ${d.spotPlain}`;
+        if (d.note)      line += `  ${d.note}`;
+        L.push(line);
       });
     }
 
     if (p.checkin.days.length) {
-      L.push(`  チェックイン対応  A ${p.checkin.a}件 × ${yenP_(P.CHECKIN.PRICE_A)}`
-        + ` / B ${p.checkin.b}件 × ${yenP_(P.CHECKIN.PRICE_B)} = ${yenP_(p.checkin.amount)}`);
-      if (p.checkin.halfCut) {
-        L.push(`     うち半日(W列) ${p.checkin.halfDays}件 で -${yenP_(p.checkin.halfCut)}`
-          + ` (掛け率 ${P.CHECKIN.HALF_RATE})`);
-      }
-      L.push(`     ※${P.CHECKIN.TAX_NOTE}`);
+      L.push(`  チェックイン対応  A ${p.checkin.a}件 / B ${p.checkin.b}件 `);
       p.checkin.days.forEach(d => {
         L.push(`       ${d.date}  ${d.rooms}  ${d.type}  ${yenP_(d.amount)}`
-          + (d.dinnerSrc ? `  [${d.dinnerSrc}]` : '')
-          + (d.half ? `  半日 (${yenP_(d.full)} → ${yenP_(d.amount)})` : ''));
-        const detail = [d.boardMeals, d.optMeals, d.orderMeals]
-          .filter(x => x).join('  ///  ');
-        if (detail) L.push(`           食事: ${detail}`);
+          + (d.half ? '  半日' : ''));
       });
     }
 
     L.push(`  ── 合計 ${yenP_(p.total)}`);
-    if (!p.contractKnown) {
-      // 何も当たっていない人を黙って落とさない
-      if (!p.setup.count && !p.deep.days.length && !p.checkin.days.length) {
-        L.push('     (該当する業務が0件)');
-      }
-    }
   });
 
   L.push('');
@@ -1093,24 +1108,39 @@ function logStaffPay_(res) {
 
   L.push('');
   L.push('── 計算に使った読み (変えるときは Config.gs の PAYROLL) ──');
-  L.push(`  セットアップ1件の単位 : ${P.SETUP.COUNT_UNIT}  (day = 同じ日に1F+2F掃除しても1件)`);
+  L.push(`  セットアップ1件の単位 : ${P.SETUP.COUNT_UNIT}  (day = 同じ日に1F+2F掃除しても1件)`
+    + `  / 1件 ${yenP_(P.SETUP.UNIT_PRICE)}`);
   L.push(`  両階とも「特別」の日   : ${P.SPECIAL_DAY.BOTH_FLOORS_PT}pt 相当`
     + ` = ${yenP_(deepCleanAmount_(P.SPECIAL_DAY.BOTH_FLOORS_PT).amount)} (セットアップは付けない)`);
   L.push(`  片階だけ「特別」の日   : 布団${P.SPECIAL_DAY.ONE_FLOOR_FUTONS}個の入替清掃として扱う`
-    + ` (= その日のセットアップ1件に含める / 特別報酬なし)`);
+    + ' (= その日のセットアップ1件に含める / 特別報酬なし)');
   L.push(`  「特」シート           : ${P.DEEP.USE_SHEET ? '読む' : '読まない (発注者指示)'}`);
   L.push('  仕出しの判定           : 清掃ボードR列 / LatestOptions / 注文確認票 の'
     + 'いずれか1つでも夕食があれば B');
+  L.push(`  チェックイン対応の単価 : A ${yenP_(P.CHECKIN.PRICE_A)} / B ${yenP_(P.CHECKIN.PRICE_B)}`
+    + `  ※${P.CHECKIN.TAX_NOTE}`);
   L.push(`  X列(特別清掃箇所)      : ${P.MEMO.ENABLED ? 'メモとしてログに出すだけ (金額には効かせない)' : '見ない'}`);
-  L.push(`  特別報酬「その値」     : ${P.BONUS.BASE}`);
+  L.push(`  特別報酬「その値」     : ${P.BONUS.BASE}`
+    + `  (4人超の分 × 次回${yenP_(P.BONUS.NEXT_RATE)} / 直前${yenP_(P.BONUS.PREV_RATE)})`);
   L.push(`  特別報酬の単位         : ${P.BONUS.PER_ROOM ? '部屋ごとに積む' : '日ごとに1回'}`);
   L.push(`  清掃達成率の効かせ方   : ${P.SHORTFALL.RATE_MODE}`
-    + (P.SHORTFALL.RATE_MODE === 'contract' ? ` (×${P.SHORTFALL.CONTRACT_RATIO})` : ''));
+    + (P.SHORTFALL.RATE_MODE === 'contract' ? ` (×${P.SHORTFALL.CONTRACT_RATIO})` : '')
+    + `  (1件 ${yenP_(P.SETUP.UNIT_PRICE)} × 達成率)`);
   L.push(`  複数行のまとめ方       : ${P.SHORTFALL.AGGREGATE}`);
   L.push(`  やり直し1箇所の減額   : ${yenP_(P.SHORTFALL.REDO_DEDUCTION)}`
-    + (P.SHORTFALL.REDO_DEDUCTION ? '' : ' (0 = 金額には効かせず内訳に出すだけ)'));
+    + (P.SHORTFALL.REDO_DEDUCTION ? '' : ' (0 = 金額には効かせず件数を出すだけ)'));
   L.push(`  接客半日(W列)の掛け率 : `
-    + (P.CHECKIN.HALF_ENABLED ? `${P.CHECKIN.HALF_RATE} ★契約書に根拠が無い列。要確認` : '見ない'));
+    + (P.CHECKIN.HALF_ENABLED ? `${P.CHECKIN.HALF_RATE}` : '見ない'));
+
+  //  除外した名前は黙って落とさない。金額が合わないときの手がかりになる。
+  const ex = res.excluded || {};
+  const exNames = Object.keys(ex);
+  if (exNames.length) {
+    exNames.forEach(nm => {
+      L.push(`  給料計算から除外       : 「${nm}」 清掃${ex[nm].cleanDays}日 / 接客${ex[nm].nightDays}日`
+        + '  (CONFIG.PAYROLL.EXCLUDE_NAMES)');
+    });
+  }
 
   Logger.log(L.join('\n'));
   return L.join('\n');
