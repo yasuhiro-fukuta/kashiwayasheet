@@ -750,14 +750,14 @@ function isIgnoredStaffName_(name) {
   const s = String(name || '').trim();
   if (!s) return true;
   if (CONFIG.STAFF.IGNORE.indexOf(s) >= 0) return true;
-  //  給料計算から外す名前 (人ではない印など)。
-  //  黙って落とさないよう、除外した分はログの末尾に出す。
-  return (CONFIG.PAYROLL.EXCLUDE_NAMES || []).indexOf(s) >= 0;
+  //  給料が発生しない人 (オーナー本人など)。
+  //  作業自体は実在するので、日数はログの末尾に出す。
+  return (CONFIG.PAYROLL.NO_PAY_NAMES || []).indexOf(s) >= 0;
 }
 
-/** 除外した名前が実際に何件あったかを数える (ログで見せるため)。 */
+/** 給料が発生しない人の作業日数を数える (ログで見せるため)。 */
 function countExcludedWork_(board, month) {
-  const names = CONFIG.PAYROLL.EXCLUDE_NAMES || [];
+  const names = CONFIG.PAYROLL.NO_PAY_NAMES || [];
   const out = {};
   if (!names.length) return out;
   board.forEach(r => {
@@ -1132,15 +1132,11 @@ function logStaffPay_(res) {
   L.push(`  接客半日(W列)の掛け率 : `
     + (P.CHECKIN.HALF_ENABLED ? `${P.CHECKIN.HALF_RATE}` : '見ない'));
 
-  //  除外した名前は黙って落とさない。金額が合わないときの手がかりになる。
+  //  給料が発生しない人も作業はしているので、日数だけ残す。
   const ex = res.excluded || {};
-  const exNames = Object.keys(ex);
-  if (exNames.length) {
-    exNames.forEach(nm => {
-      L.push(`  給料計算から除外       : 「${nm}」 清掃${ex[nm].cleanDays}日 / 接客${ex[nm].nightDays}日`
-        + '  (CONFIG.PAYROLL.EXCLUDE_NAMES)');
-    });
-  }
+  Object.keys(ex).forEach(nm => {
+    L.push(`  オーナー対応 (給与なし): 「${nm}」 清掃${ex[nm].cleanDays}日 / 接客${ex[nm].nightDays}日`);
+  });
 
   Logger.log(L.join('\n'));
   return L.join('\n');
