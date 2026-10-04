@@ -55,7 +55,18 @@ function calcStaffPay(ym) {
   //    清掃ボードで両階とも「特別」の日からだけ出す。
   const deep  = CONFIG.PAYROLL.DEEP.USE_SHEET ? readDeepCleanForPayroll_() : [];
   const opts  = CONFIG.PAYROLL.CHECKIN.USE_LATEST_OPTIONS ? readOptionsForPayroll_() : [];
-  const res   = computeStaffPay(board, deep, month, opts);
+
+  //  ほなみや注文確認票。読めなくても計算は止めず、理由を警告に出す。
+  let order = { ok: false, dates: {}, reason: '設定で無効' };
+  if (CONFIG.PAYROLL.CHECKIN.USE_ORDER_SHEET) {
+    try {
+      order = readOrderSheetDinners_(month);
+    } catch (e) {
+      order = { ok: false, dates: {}, reason: String(e.message || e) };
+    }
+  }
+
+  const res = computeStaffPay(board, deep, month, opts, order);
   logStaffPay_(res);
   return res;
 }
@@ -145,6 +156,235 @@ function readOptionsForPayroll_() {
   return out;
 }
 
+// ── ほなみや注文確認票の読み取り (仕出し判定の3つ目の情報源) ──────
+//  読むだけ。書き込みは一切しない。
+
+/**
+ * タブ名から対象年月 ('yyyy-MM') を割り出す。
+ *  'R8　１０月' → 2026-10   (R8 = 令和8年 = 2026年)
+ *  '９月'       → ''        (年が決まらないので対象外)
+ */
+function orderSheetMonthOf_(name) {
+  const O = CONFIG.PAYROLL.ORDER_SHEET;
+  const s = toHalfWidth(String(name || ''));
+  const ym = s.match(O.YEAR_PATTERN);
+  const mm = s.match(O.MONTH_PATTERN);
+  if (!ym || !mm) return '';
+  const year  = O.REIWA_BASE_YEAR + Number(ym[1]);
+  const month = Number(mm[1]);
+  if (!(month >= 1 && month <= 12)) return '';
+  return `${year}-${('0' + month).slice(-2)}`;
+}
+
+/** 対象月のタブを探す。見つからなければ null。 */
+function findOrderSheetForMonth_(ss, month) {
+  const O = CONFIG.PAYROLL.ORDER_SHEET;
+  const fixed = O.SHEET_OVERRIDES[month];
+  if (fixed) return ss.getSheetByName(fixed);
+
+  const sheets = ss.getSheets();
+  for (let i = 0; i < sheets.length; i++) {
+    if (orderSheetMonthOf_(sheets[i].getName()) === month) return sheets[i];
+  }
+  return null;
+}
+
+/**
+ * 見出し行を探し、「日付」列と、その右側で最初の「注文品」列を組にする。
+ *  1階ぶんと2階ぶんで2組できる。月によって間の空列の数が違うため、
+ *  位置ではなく見出しで決める。
+ * @return {{headerRow: number, pairs: Array<{date:number,item:number}>}}
+ */
+function findOrderSheetColumns_(values) {
+  const O = CONFIG.PAYROLL.ORDER_SHEET;
+  const maxRow = Math.min(O.HEADER_SEARCH_ROWS, values.length);
+
+  for (let r = 0; r < maxRow; r++) {
+    const row = values[r].map(v => String(v || '').trim());
+    const dateCols = [];
+    const itemCols = [];
+    row.forEach((v, i) => {
+      if (v === O.HEADER_DATE) dateCols.push(i);
+      if (v === O.HEADER_ITEM) itemCols.push(i);
+    });
+    if (!dateCols.length || !itemCols.length) continue;
+
+    const pairs = [];
+    dateCols.forEach(d => {
+      //  その日付列より右で最初の注文品列を組にする
+      const item = itemCols.filter(i => i > d).sort((a, b) => a - b)[0];
+      if (item !== undefined) pairs.push({ date: d, item: item });
+    });
+    if (pairs.length) return { headerRow: r, pairs: pairs };
+  }
+  return { headerRow: -1, pairs: [] };
+}
+
+/**
+ * 表の中身から対象年月を割り出す。
+ *  一次転記シートはタブ名に年月が無く、見出しの上のセルに
+ *  「R8年9月」のように入っている。それを拾う。
+ *  ★拾えなければ '' を返す。年月が分からないまま使うと
+ *    9月の注文を10月の給料に付けてしまうため。
+ */
+function orderSheetMonthFromCells_(values) {
+  const O = CONFIG.PAYROLL.ORDER_SHEET;
+  const maxRow = Math.min(O.MONTH_CELL_SEARCH_ROWS, values.length);
+  for (let r = 0; r < maxRow; r++) {
+    const row = values[r] || [];
+    for (let c = 0; c < row.length; c++) {
+      const m = orderSheetMonthOf_(row[c]);
+      if (m) return m;
+    }
+  }
+  return '';
+}
+
+/**
+ * 1枚のシートから「夕食がある日」を拾う。
+ *  @return {{ok, dates, sheetName, reason}}
+ */
+function readOneOrderSheet_(sh, month, label) {
+  const name = `${label}「${sh.getName()}」`;
+  const last = sh.getLastRow(), lastCol = sh.getLastColumn();
+  if (last < 2 || lastCol < 2) {
+    return { ok: true, dates: {}, sheetName: name };
+  }
+
+  const values = sh.getRange(1, 1, last, lastCol).getDisplayValues();
+
+  //  タブ名で年月が決まらないシート (一次転記など) は中身から拾う
+  let sheetMonth = orderSheetMonthOf_(sh.getName()) || orderSheetMonthFromCells_(values);
+  if (!sheetMonth) {
+    return {
+      ok: false, dates: {}, sheetName: name,
+      reason: `${name} の年月が読めない。`
+        + '見出しの上に「R8年9月」のような表記があるか確認してください',
+    };
+  }
+  if (sheetMonth !== month) {
+    return {
+      ok: false, dates: {}, sheetName: name,
+      reason: `${name} は ${sheetMonth} の表で、計算対象の ${month} と違う`,
+    };
+  }
+
+  const cols = findOrderSheetColumns_(values);
+  if (!cols.pairs.length) {
+    const O = CONFIG.PAYROLL.ORDER_SHEET;
+    return {
+      ok: false, dates: {}, sheetName: name,
+      reason: `${name} に「${O.HEADER_DATE}」と「${O.HEADER_ITEM}」の見出しが見つからない`,
+    };
+  }
+
+  return { ok: true, sheetName: name, dates: collectOrderSheetDinners(values, cols, month) };
+}
+
+/**
+ * 注文確認票から「夕食がある日」を拾う。
+ *  見る先は2つ。両方見て OR で足す。
+ *    ① 同じスプレッドシート内の一次転記シート (ORDER_SHEET.LOCAL_SHEET_NAME)
+ *    ② ほなみやと共有している注文確認票ファイル
+ *       (Googleスプレッドシート形式に変換してIDを登録したとき)
+ *  どちらか1つでも読めれば ok にする。
+ *
+ *  @return {{ok, dates: Object, sources: Array, reason}}
+ *    dates = { 'yyyy-MM-dd': ['牛すき+おにぎり', ...] }
+ */
+function readOrderSheetDinners_(month) {
+  const O = CONFIG.PAYROLL.ORDER_SHEET;
+  const dates = {};
+  const sources = [];
+  const reasons = [];
+  let anyOk = false;
+
+  function absorb(res) {
+    if (!res) return;
+    if (res.ok) {
+      anyOk = true;
+      sources.push(res.sheetName);
+      Object.keys(res.dates).forEach(d => {
+        if (!dates[d]) dates[d] = [];
+        res.dates[d].forEach(x => { if (dates[d].indexOf(x) < 0) dates[d].push(x); });
+      });
+    } else if (res.reason) {
+      reasons.push(res.reason);
+    }
+  }
+
+  // ① 同じブック内の一次転記シート
+  if (O.LOCAL_SHEET_NAME) {
+    const sh = SpreadsheetApp.getActive().getSheetByName(O.LOCAL_SHEET_NAME);
+    if (sh) {
+      try {
+        absorb(readOneOrderSheet_(sh, month, '一次転記'));
+      } catch (e) {
+        reasons.push(`一次転記シートの読み取りに失敗: ${e.message || e}`);
+      }
+    } else {
+      reasons.push(`「${O.LOCAL_SHEET_NAME}」タブが無い`);
+    }
+  }
+
+  // ② ほなみやと共有しているファイル (変換してIDを登録したときだけ)
+  const id = PropertiesService.getScriptProperties()
+    .getProperty(CONFIG.ORDER_EXPORT.PROP_TARGET_ID);
+  if (id) {
+    try {
+      const ss = SpreadsheetApp.openById(id);
+      const sh = findOrderSheetForMonth_(ss, month);
+      if (sh) absorb(readOneOrderSheet_(sh, month, '共有ファイル'));
+      else reasons.push(`共有ファイルに ${month} のタブが見つからない`
+        + ` (タブ名: ${ss.getSheets().map(x => x.getName()).join(' / ')})`);
+    } catch (e) {
+      reasons.push('共有ファイルを開けない。Googleスプレッドシート形式に'
+        + `変換されているか確認 (${e.message || e})`);
+    }
+  }
+
+  return {
+    ok: anyOk, dates: dates, sources: sources,
+    sheetName: sources.join(' + '),
+    reason: anyOk ? '' : (reasons.join(' / ') || '参照先が設定されていない'),
+    notes: reasons,
+  };
+}
+
+/**
+ * 表の中身から「夕食がある日」を集める。シートに触らないのでテストできる。
+ *  ・日付セルは品目が複数ある日は空欄になるので直前の日を引き継ぐ。
+ *  ・1階ぶん・2階ぶんそれぞれで独立に引き継ぐ (列の組ごとに別の列なので)。
+ *  ・どちらの階でも夕食があればその日は夕食あり。
+ */
+function collectOrderSheetDinners(values, cols, month) {
+  const O = CONFIG.PAYROLL.ORDER_SHEET;
+  const out = {};
+
+  cols.pairs.forEach(pair => {
+    let day = 0;
+    for (let r = cols.headerRow + 1; r < values.length; r++) {
+      const row = values[r] || [];
+      const dcell = toHalfWidth(String(row[pair.date] || '').trim());
+      const m = dcell.match(O.DAY_PATTERN);
+      if (m) {
+        const n = Number(m[1]);
+        if (n >= 1 && n <= 31) day = n;
+      }
+      if (!day) continue;
+
+      const item = String(row[pair.item] || '').trim();
+      if (!item) continue;
+      if (classifyMealItem_(item) !== 'dinner') continue;
+
+      const date = `${month}-${('0' + day).slice(-2)}`;
+      if (!out[date]) out[date] = [];
+      if (out[date].indexOf(item) < 0) out[date].push(item);
+    }
+  });
+  return out;
+}
+
 // ── 計算本体 (シートに触らない。テストから直接呼べる) ──────────
 
 /**
@@ -152,8 +392,9 @@ function readOptionsForPayroll_() {
  * @param {Array<Object>} deep  readDeepCleanForPayroll_() の出力
  * @param {string} month 'yyyy-MM'
  */
-function computeStaffPay(board, deep, month, optionRows) {
+function computeStaffPay(board, deep, month, optionRows, orderSheet) {
   const P = CONFIG.PAYROLL;
+  const order = orderSheet || { ok: false, dates: {}, reason: '' };
 
   //  LatestOptions の食事サマリを日付ごとにまとめておく。
   //  チェックイン対応は日単位なので部屋は問わない。
@@ -352,7 +593,7 @@ function computeStaffPay(board, deep, month, optionRows) {
     if (!nightByDay[k]) {
       nightByDay[k] = {
         server: r.server, date: r.date, dinner: false, rooms: [],
-        dinnerSrc: [], boardMeals: [], optMeals: [],
+        dinnerSrc: [], boardMeals: [], optMeals: [], orderMeals: [],
       };
     }
     nightByDay[k].rooms.push(r.room);
@@ -366,7 +607,8 @@ function computeStaffPay(board, deep, month, optionRows) {
     if (isHalfNight_(r.nightHalf)) nightByDay[k].half = true;
   });
 
-  //  清掃ボードの食事列で拾えなかった分を LatestOptions から補う。
+  //  ★3つの表のどれか1つでも夕食があれば仕出しあり (OR)。
+  //    ② LatestOptions
   Object.keys(nightByDay).forEach(k => {
     const u = nightByDay[k];
     (optMealsByDate[u.date] || []).forEach(o => {
@@ -376,6 +618,13 @@ function computeStaffPay(board, deep, month, optionRows) {
         if (u.dinnerSrc.indexOf('LatestOptions') < 0) u.dinnerSrc.push('LatestOptions');
       }
     });
+    //    ③ ほなみや注文確認票 (ここに入る品目はすでに夕食だけに絞ってある)
+    const od = order.dates[u.date];
+    if (od && od.length) {
+      u.orderMeals = od.slice();
+      u.dinner = true;
+      if (u.dinnerSrc.indexOf('注文確認票') < 0) u.dinnerSrc.push('注文確認票');
+    }
   });
 
   Object.keys(nightByDay).forEach(k => {
@@ -398,6 +647,7 @@ function computeStaffPay(board, deep, month, optionRows) {
       dinnerSrc:  u.dinnerSrc.join('+'),
       boardMeals: u.boardMeals.join(' | '),
       optMeals:   u.optMeals.join(' | '),
+      orderMeals: u.orderMeals.join(' | '),
     });
 
     //  食事の文字列はあるのに夕食と判定しなかった日は見落としの疑いがある。
@@ -408,6 +658,13 @@ function computeStaffPay(board, deep, month, optionRows) {
         + ` 内容: ${u.boardMeals.concat(u.optMeals).join(' | ')}`);
     }
   });
+
+  //  注文確認票を見られなかったときは黙って済ませない。
+  //  仕出しの判定がその分ゆるくなる (Aに寄る) ため。
+  if (P.CHECKIN.USE_ORDER_SHEET && !order.ok && order.reason) {
+    warnings.push(`注文確認票を見られませんでした → ${order.reason}`
+      + ' (清掃ボードと LatestOptions だけで判定しています)');
+  }
 
   // ── 契約の有無で足切り + 合計 ───────────────────────────
   const list = Object.keys(people).map(n => {
@@ -792,7 +1049,8 @@ function logStaffPay_(res) {
         L.push(`       ${d.date}  ${d.rooms}  ${d.type}  ${yenP_(d.amount)}`
           + (d.dinnerSrc ? `  [${d.dinnerSrc}]` : '')
           + (d.half ? `  半日 (${yenP_(d.full)} → ${yenP_(d.amount)})` : ''));
-        const detail = [d.boardMeals, d.optMeals].filter(x => x).join('  ///  ');
+        const detail = [d.boardMeals, d.optMeals, d.orderMeals]
+          .filter(x => x).join('  ///  ');
         if (detail) L.push(`           食事: ${detail}`);
       });
     }
@@ -823,6 +1081,8 @@ function logStaffPay_(res) {
   L.push(`  片階だけ「特別」の日   : 布団${P.SPECIAL_DAY.ONE_FLOOR_FUTONS}個の入替清掃として扱う`
     + ` (= その日のセットアップ1件に含める / 特別報酬なし)`);
   L.push(`  「特」シート           : ${P.DEEP.USE_SHEET ? '読む' : '読まない (発注者指示)'}`);
+  L.push('  仕出しの判定           : 清掃ボードR列 / LatestOptions / 注文確認票 の'
+    + 'いずれか1つでも夕食があれば B');
   L.push(`  特別報酬「その値」     : ${P.BONUS.BASE}`);
   L.push(`  特別報酬の単位         : ${P.BONUS.PER_ROOM ? '部屋ごとに積む' : '日ごとに1回'}`);
   L.push(`  清掃達成率の効かせ方   : ${P.SHORTFALL.RATE_MODE}`
@@ -864,6 +1124,12 @@ function diagnoseCheckinPay(ym) {
 
   const board = readBoardForPayroll_();
   const opts  = readOptionsForPayroll_();
+  let order;
+  try {
+    order = readOrderSheetDinners_(month);
+  } catch (e) {
+    order = { ok: false, dates: {}, reason: String(e.message || e) };
+  }
 
   const inMonth = d => String(d).slice(0, 7) === month;
   const P = CONFIG.PAYROLL;
@@ -897,12 +1163,21 @@ function diagnoseCheckinPay(ym) {
   L.push('════════════════════════════════════════════');
   L.push(`清掃ボード ${month} の行: ${board.filter(r => inMonth(r.date)).length}`);
   L.push(`LatestOptions ${month} の有効行: ${opts.filter(o => inMonth(o.checkin)).length}`);
+  if (order.ok) {
+    const od = Object.keys(order.dates).sort();
+    L.push(`注文確認票 [${order.sheetName}] の夕食がある日: ${od.length}日`
+      + (od.length ? ` (${od.map(d => d.slice(8)).join(', ')})` : ''));
+    (order.notes || []).forEach(n => L.push(`  ※ ${n}`));
+  } else {
+    L.push(`注文確認票: ★読めません — ${order.reason}`);
+  }
   L.push(`接客担当が入っている到着日: ${keys.length}`);
   L.push('');
 
   const missLabel = [];   // ① 食事はあるが夕食と判定しなかった
   const missBoard = [];   // ② LatestOptions にあるがボードR列が空
   const noMeal    = [];   // ③ 食事の記載がどこにも無い
+  const missOnlyOrder = []; // ④ 注文確認票にしかない (柏屋側の表に未記入)
   let nA = 0, nB = 0;
 
   keys.forEach(k => {
@@ -936,6 +1211,13 @@ function diagnoseCheckinPay(ym) {
       lines.push(`               ${judged.join('  /  ')}`);
     });
 
+    const orderMeals = order.dates[u.date] || [];
+    if (orderMeals.length) {
+      dinner = true;
+      if (srcs.indexOf('注文確認票') < 0) srcs.push('注文確認票');
+      lines.push(`      注文確認票: ${orderMeals.join(', ')}`);
+    }
+
     const verdict = dinner
       ? `B(CI+仕出し) ${yenP_(P.CHECKIN.PRICE_B)}`
       : `A(CIのみ)    ${yenP_(P.CHECKIN.PRICE_A)}`;
@@ -950,11 +1232,14 @@ function diagnoseCheckinPay(ym) {
       missLabel.push(`${u.date} ${u.server}: `
         + boardMeals.map(r => r.meal).concat(optMeals.map(o => o.meal)).join(' | '));
     }
+    if (orderMeals.length && !boardMeals.length && !optMeals.length) {
+      missOnlyOrder.push(`${u.date} ${u.server}: ${orderMeals.join(', ')}`);
+    }
     if (optMeals.length && !boardMeals.length) {
       missBoard.push(`${u.date} ${u.server}: `
         + optMeals.map(o => `${o.room || '?'} ${o.guestName} → ${o.meal}`).join(' | '));
     }
-    if (!boardMeals.length && !optMeals.length) {
+    if (!boardMeals.length && !optMeals.length && !orderMeals.length) {
       noMeal.push(`${u.date} ${u.server} (${u.rows.map(r => r.room + ':' + (r.guestName || '?')).join(', ')})`);
     }
   });
@@ -977,12 +1262,25 @@ function diagnoseCheckinPay(ym) {
   else L.push('   なし');
 
   L.push('');
+  L.push('── ④ 注文確認票にしか無い注文 ─────────────────────────');
+  L.push('   WhatsApp等で直接受けた注文。給料の判定はこれも見ているので');
+  L.push('   金額は正しく出る。清掃ボードに出したいなら');
+  L.push('   CleaningOverride の食事列に書くこと。');
+  if (missOnlyOrder.length) missOnlyOrder.forEach(x => L.push(`   ・${x}`));
+  else L.push('   なし');
+
+  L.push('');
   L.push('── ③ 食事の記載がどこにも無い日 ───────────────────────');
-  L.push('   注文が無ければ正しく A。WhatsApp等で受けた注文があるなら');
-  L.push('   CleaningOverride の食事列に書くと反映される。');
+  L.push('   3つの表のどこにも注文が無い日。正しく A のはず。');
+  L.push('   注文確認票が読めていない場合はここが多くなるので、');
+  L.push('   冒頭の「注文確認票」の行をまず確認すること。');
   if (noMeal.length) noMeal.forEach(x => L.push(`   ・${x}`));
   else L.push('   なし');
 
   Logger.log(L.join('\n'));
-  return { month: month, a: nA, b: nB, missLabel: missLabel, missBoard: missBoard, noMeal: noMeal };
+  return {
+    month: month, a: nA, b: nB, orderOk: order.ok,
+    missLabel: missLabel, missBoard: missBoard,
+    missOnlyOrder: missOnlyOrder, noMeal: noMeal,
+  };
 }
