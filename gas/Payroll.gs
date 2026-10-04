@@ -221,53 +221,133 @@ function findOrderSheetColumns_(values) {
 }
 
 /**
- * 注文確認票の当月タブから「夕食がある日」を拾う。
- *  @return {{ok, dates: Object, sheetName, reason}}
+ * 表の中身から対象年月を割り出す。
+ *  一次転記シートはタブ名に年月が無く、見出しの上のセルに
+ *  「R8年9月」のように入っている。それを拾う。
+ *  ★拾えなければ '' を返す。年月が分からないまま使うと
+ *    9月の注文を10月の給料に付けてしまうため。
+ */
+function orderSheetMonthFromCells_(values) {
+  const O = CONFIG.PAYROLL.ORDER_SHEET;
+  const maxRow = Math.min(O.MONTH_CELL_SEARCH_ROWS, values.length);
+  for (let r = 0; r < maxRow; r++) {
+    const row = values[r] || [];
+    for (let c = 0; c < row.length; c++) {
+      const m = orderSheetMonthOf_(row[c]);
+      if (m) return m;
+    }
+  }
+  return '';
+}
+
+/**
+ * 1枚のシートから「夕食がある日」を拾う。
+ *  @return {{ok, dates, sheetName, reason}}
+ */
+function readOneOrderSheet_(sh, month, label) {
+  const name = `${label}「${sh.getName()}」`;
+  const last = sh.getLastRow(), lastCol = sh.getLastColumn();
+  if (last < 2 || lastCol < 2) {
+    return { ok: true, dates: {}, sheetName: name };
+  }
+
+  const values = sh.getRange(1, 1, last, lastCol).getDisplayValues();
+
+  //  タブ名で年月が決まらないシート (一次転記など) は中身から拾う
+  let sheetMonth = orderSheetMonthOf_(sh.getName()) || orderSheetMonthFromCells_(values);
+  if (!sheetMonth) {
+    return {
+      ok: false, dates: {}, sheetName: name,
+      reason: `${name} の年月が読めない。`
+        + '見出しの上に「R8年9月」のような表記があるか確認してください',
+    };
+  }
+  if (sheetMonth !== month) {
+    return {
+      ok: false, dates: {}, sheetName: name,
+      reason: `${name} は ${sheetMonth} の表で、計算対象の ${month} と違う`,
+    };
+  }
+
+  const cols = findOrderSheetColumns_(values);
+  if (!cols.pairs.length) {
+    const O = CONFIG.PAYROLL.ORDER_SHEET;
+    return {
+      ok: false, dates: {}, sheetName: name,
+      reason: `${name} に「${O.HEADER_DATE}」と「${O.HEADER_ITEM}」の見出しが見つからない`,
+    };
+  }
+
+  return { ok: true, sheetName: name, dates: collectOrderSheetDinners(values, cols, month) };
+}
+
+/**
+ * 注文確認票から「夕食がある日」を拾う。
+ *  見る先は2つ。両方見て OR で足す。
+ *    ① 同じスプレッドシート内の一次転記シート (ORDER_SHEET.LOCAL_SHEET_NAME)
+ *    ② ほなみやと共有している注文確認票ファイル
+ *       (Googleスプレッドシート形式に変換してIDを登録したとき)
+ *  どちらか1つでも読めれば ok にする。
+ *
+ *  @return {{ok, dates: Object, sources: Array, reason}}
  *    dates = { 'yyyy-MM-dd': ['牛すき+おにぎり', ...] }
  */
 function readOrderSheetDinners_(month) {
+  const O = CONFIG.PAYROLL.ORDER_SHEET;
+  const dates = {};
+  const sources = [];
+  const reasons = [];
+  let anyOk = false;
+
+  function absorb(res) {
+    if (!res) return;
+    if (res.ok) {
+      anyOk = true;
+      sources.push(res.sheetName);
+      Object.keys(res.dates).forEach(d => {
+        if (!dates[d]) dates[d] = [];
+        res.dates[d].forEach(x => { if (dates[d].indexOf(x) < 0) dates[d].push(x); });
+      });
+    } else if (res.reason) {
+      reasons.push(res.reason);
+    }
+  }
+
+  // ① 同じブック内の一次転記シート
+  if (O.LOCAL_SHEET_NAME) {
+    const sh = SpreadsheetApp.getActive().getSheetByName(O.LOCAL_SHEET_NAME);
+    if (sh) {
+      try {
+        absorb(readOneOrderSheet_(sh, month, '一次転記'));
+      } catch (e) {
+        reasons.push(`一次転記シートの読み取りに失敗: ${e.message || e}`);
+      }
+    } else {
+      reasons.push(`「${O.LOCAL_SHEET_NAME}」タブが無い`);
+    }
+  }
+
+  // ② ほなみやと共有しているファイル (変換してIDを登録したときだけ)
   const id = PropertiesService.getScriptProperties()
     .getProperty(CONFIG.ORDER_EXPORT.PROP_TARGET_ID);
-  if (!id) {
-    return { ok: false, dates: {}, reason: '注文確認票のIDが未設定 (setOrderExportTargetId)' };
-  }
-
-  let ss;
-  try {
-    ss = SpreadsheetApp.openById(id);
-  } catch (e) {
-    return {
-      ok: false, dates: {},
-      reason: '注文確認票を開けない。Googleスプレッドシート形式に変換されているか確認'
-        + ` (${e.message || e})`,
-    };
-  }
-
-  const sh = findOrderSheetForMonth_(ss, month);
-  if (!sh) {
-    return {
-      ok: false, dates: {},
-      reason: `${month} のタブが見つからない。`
-        + `タブ名: ${ss.getSheets().map(x => x.getName()).join(' / ')}`,
-    };
-  }
-
-  const last = sh.getLastRow(), lastCol = sh.getLastColumn();
-  if (last < 2) return { ok: true, dates: {}, sheetName: sh.getName() };
-
-  const values = sh.getRange(1, 1, last, lastCol).getDisplayValues();
-  const cols = findOrderSheetColumns_(values);
-  if (!cols.pairs.length) {
-    return {
-      ok: false, dates: {}, sheetName: sh.getName(),
-      reason: `「${CONFIG.PAYROLL.ORDER_SHEET.HEADER_DATE}」と`
-        + `「${CONFIG.PAYROLL.ORDER_SHEET.HEADER_ITEM}」の見出しが見つからない`,
-    };
+  if (id) {
+    try {
+      const ss = SpreadsheetApp.openById(id);
+      const sh = findOrderSheetForMonth_(ss, month);
+      if (sh) absorb(readOneOrderSheet_(sh, month, '共有ファイル'));
+      else reasons.push(`共有ファイルに ${month} のタブが見つからない`
+        + ` (タブ名: ${ss.getSheets().map(x => x.getName()).join(' / ')})`);
+    } catch (e) {
+      reasons.push('共有ファイルを開けない。Googleスプレッドシート形式に'
+        + `変換されているか確認 (${e.message || e})`);
+    }
   }
 
   return {
-    ok: true, sheetName: sh.getName(),
-    dates: collectOrderSheetDinners(values, cols, month),
+    ok: anyOk, dates: dates, sources: sources,
+    sheetName: sources.join(' + '),
+    reason: anyOk ? '' : (reasons.join(' / ') || '参照先が設定されていない'),
+    notes: reasons,
   };
 }
 
@@ -1085,8 +1165,9 @@ function diagnoseCheckinPay(ym) {
   L.push(`LatestOptions ${month} の有効行: ${opts.filter(o => inMonth(o.checkin)).length}`);
   if (order.ok) {
     const od = Object.keys(order.dates).sort();
-    L.push(`注文確認票「${order.sheetName}」の夕食がある日: ${od.length}日`
+    L.push(`注文確認票 [${order.sheetName}] の夕食がある日: ${od.length}日`
       + (od.length ? ` (${od.map(d => d.slice(8)).join(', ')})` : ''));
+    (order.notes || []).forEach(n => L.push(`  ※ ${n}`));
   } else {
     L.push(`注文確認票: ★読めません — ${order.reason}`);
   }
