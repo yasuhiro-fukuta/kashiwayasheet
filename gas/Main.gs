@@ -355,6 +355,7 @@ function onOpen() {
     .addItem('💰 給料を計算 (当月・見込み)',          'calcStaffPayThisMonth')
     .addItem('🩺 仕出し判定の診断 (前月)',            'diagnoseCheckinPay')
     .addItem('🩺 特別報酬(4人超)の診断 (前月)',       'diagnoseSetupBonus')
+    .addItem('🍱 食事予約表と清掃表の突合 (今日)',     'diagnoseMealMatch')
     .addSeparator()
     .addItem('📤 注文確認票へ転記',                   'runOrderExportOnly')
     .addItem('🔍 転記内容を確認 (書き込みなし)',       'dumpOrderExport')
