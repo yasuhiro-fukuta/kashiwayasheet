@@ -749,6 +749,7 @@ const CONFIG = {
       //  特シートに同じ (対応者, 日) の pt 行があるときは
       //  特シート側を正として、こちらの 6,000円 は付けない。
       //  (同じ作業を2回払わないため)
+      //  ★DEEP.USE_SHEET が false の間は特シートを読まないので効かない。
       PREFER_DEEP_SHEET: true,
     },
 
@@ -769,6 +770,10 @@ const CONFIG = {
 
       //  1件に複数行(1F/2F)がぶら下がるときの達成率のまとめ方。
       //   'avg' … 値が入っている行の平均  'min' … いちばん低い行に合わせる
+      //  ★2026-10 発注者指示: 1階と2階でパーセントが違う日は
+      //    足して2で割る → 'avg' で確定。
+      //    片方が未記入の日は、記入のある方をそのまま使う
+      //    (未記入を0%とみなして半分にしない)。
       AGGREGATE: 'avg',
 
       //  やり直した箇所 1箇所あたりの減額。
@@ -799,8 +804,14 @@ const CONFIG = {
       PER_ROOM: true,
     },
 
-    // 客室徹底清掃業務 (特シート)
+    // 客室徹底清掃業務
     DEEP: {
+      //  ★2026-10 発注者指示により「特」シートは給料計算では無視する。
+      //    徹底清掃の報酬は、清掃ボードで両階とも「特別」になっている日
+      //    (= SPECIAL_DAY) からだけ出す。
+      //    特シートを使う運用に戻すときは true にする。
+      USE_SHEET:  false,
+
       SHEET:      '特',
       BASE_PT:    15,     // この pt で満額
       MAX_PT:     20,     // ここまでは比例で増額
@@ -820,10 +831,41 @@ const CONFIG = {
       //  1件の数え方。契約書に「同日に複数組でも1件」と明記されている。
       COUNT_UNIT: 'day',
 
-      //  仕出し(夕食)があるかの判定に使う追加表記。
-      //  CONFIG.MEALS の kind:'dinner' のラベルは自動で見るので、
-      //  ここには CleaningOverride に手書きされる日本語だけ足す。
-      DINNER_HINTS: [/しゃぶ/, /すき焼/, /すきやき/, /鍋/, /夕食/, /仕出/, /ちらし/, /チラシ/],
+      //  仕出し(夕食)があるかの判定。
+      //
+      //  ★食事サマリは「, 」区切りの品目の並びで、表記がそろっていない。
+      //    実データの例:
+      //      Wagyu Sukiyaki(2人前), Ochazuke Breakfast(2人前)   ← 現行フォーム
+      //      朝食 xYes, Chicken Hot Pot Set(2人用), 朝食 x1      ← 旧フォーム
+      //      朝食 xYes, Shabu(2人用), 朝食 x2                    ← 旧フォーム(略称)
+      //      (paid) Shabu-Shabu(2人前)                          ← Lodgifyアドオン
+      //      しゃぶしゃぶ1人前                                   ← CleaningOverride 手書き
+      //    判定は品目ごとに行う。まず CONFIG.MEALS のラベルに当て、
+      //    当たらなければ下のキーワードで見る。
+      //
+      //  ★「⚠」以降は自由記述の注記で注文ではない。判定前に切り落とす。
+      //    (例: 「朝食 x1 ⚠ I would be interested in the Wagyu set...」を
+      //     夕食と誤判定しないため)
+      //
+      //  朝食は先に判定する。Ochazuke Breakfast を夕食に取り違えないため。
+      BREAKFAST_HINTS: [/朝食/, /breakfast/i, /ochazuke/i, /茶漬/],
+      DINNER_HINTS: [
+        /shabu/i, /sukiyaki/i, /hot\s*pot/i, /chirashi/i, /\bbbq\b/i, /nabe/i,
+        /しゃぶ/, /すき焼/, /すきやき/, /牛すき/, /和牛/, /鍋/, /ちらし/, /チラシ/,
+        /夕食/, /仕出/, /焼肉/, /弁当/, /ビーグル/, /ビーガン/,
+      ],
+
+      //  品目を区切る文字
+      ITEM_SEPARATORS: /[,、\/]+/,
+
+      //  注記の始まり (ここから後ろは注文として読まない)
+      NOTE_MARKER: '⚠',
+
+      //  ★清掃ボードの食事列(R)だけでなく LatestOptions も直接見る。
+      //    ボードのR列は「フォームの行が滞在に突合できたとき」しか
+      //    埋まらないため、突合に失敗した注文を取りこぼす。
+      //    チェックイン対応は日単位なので、部屋は問わず同じ日で見る。
+      USE_LATEST_OPTIONS: true,
 
       //  状態(G列)が到着日かどうかの判定
       ARRIVAL_PATTERNS: [/IN/],
@@ -868,6 +910,50 @@ const CONFIG = {
     },
   },
 
+  // ── ほなみや注文確認票への転記 v2.22 ───────────────────────
+  //  LatestOptions の内容を、ほなみやさんと共有している
+  //  「柏屋注文確認票」へ一覧として書き出す。
+  //
+  //  ★前提: 転記先は Google スプレッドシート形式でなければならない。
+  //    元ファイルは .xlsx (Excel) で、Apps Script の SpreadsheetApp は
+  //    .xlsx を開けない (openById が例外になる)。
+  //    ほなみやさんに「ファイル → Google スプレッドシートとして保存」で
+  //    変換してもらい、変換後の**新しいID**を Script Properties に入れる。
+  //      setOrderExportTargetId('変換後のID') を1回実行する。
+  //    ※IDはコードに書かない (このリポジトリは公開されている)。
+  //
+  //  ★書き込むのは専用タブ1枚だけ。
+  //    月ごとのカレンダー表 (R8　１０月 など) には絶対に触らない。
+  //    あちらはほなみやさんが手で書く領域。
+  ORDER_EXPORT: {
+    ENABLED: true,
+
+    //  転記先スプレッドシートIDを入れる Script Property のキー
+    PROP_TARGET_ID: 'ORDER_EXPORT_SHEET_ID',
+
+    //  書き込む先のタブ名。無ければ作る。
+    //  ★既存の「R8　9月福田」などに上書きしないよう、別名にしてある。
+    SHEET_NAME: '柏屋連携_食事注文',
+
+    //  対象期間。宿泊日が「当月の1日」〜「翌月の末日」の行だけ書く。
+    //  MONTHS_AHEAD: 1 = 当月 + 翌月
+    MONTHS_AHEAD: 1,
+
+    //  行を書く条件。
+    //   'meal_or_option' … 食事サマリ または オプションサマリ がある行
+    //   'meal_only'      … 食事サマリ がある行だけ
+    //   'all'            … 期間内の全行
+    //  ★既定は 'meal_or_option'。既存の「R8　9月福田」タブに
+    //    泉屋送迎・Eバイク・荷物預けの行も入っていたため。
+    INCLUDE_WHEN: 'meal_or_option',
+
+    //  出力する列の見出し (この順で書く)
+    HEADER: ['宿泊日', '曜日', '部屋', '宿泊者名', '人数', '食事', 'オプション', 'その他要望', '更新'],
+
+    //  見出しの下に入れる注意書き (A列に1行)。空文字にすれば出ない。
+    NOTICE: '※このタブは柏屋のシステムが毎時書き換えます。手で書いた内容は消えます。',
+  },
+
   PROP: {
     LAST_PROCESSED: 'LAST_PROCESSED_AT',
     LAST_OPEN_RUN:  'LAST_OPEN_RUN_AT',
@@ -894,4 +980,28 @@ function setLodgifyApiKey(key) {
   if (!key) throw new Error('キーが空です');
   PropertiesService.getScriptProperties().setProperty(CONFIG.LODGIFY.PROP_KEY, String(key).trim());
   Logger.log('Lodgify API key saved.');
+}
+
+/**
+ * ほなみや注文確認票 (Googleスプレッドシート形式に変換したもの) の
+ * IDを Script Properties に保存する。
+ *
+ *  ★このリポジトリは公開されているため、IDをコードに書かない。
+ *    エディタから一度だけ
+ *      setOrderExportTargetId('1AbC...')
+ *    を実行し、実行後はこの呼び出しを消すこと。
+ *
+ *  IDは変換後ファイルのURLの
+ *    docs.google.com/spreadsheets/d/【ここ】/edit
+ *  の部分。★.xlsx のままのURL (drive.google.com/file/d/...) ではない。
+ */
+function setOrderExportTargetId(id) {
+  if (!id) throw new Error('IDが空です');
+  const clean = String(id).trim();
+  if (/^https?:/i.test(clean)) {
+    throw new Error('URLではなくID部分だけを渡してください (/d/ と /edit の間)');
+  }
+  PropertiesService.getScriptProperties()
+    .setProperty(CONFIG.ORDER_EXPORT.PROP_TARGET_ID, clean);
+  Logger.log('転記先スプレッドシートIDを保存しました。');
 }

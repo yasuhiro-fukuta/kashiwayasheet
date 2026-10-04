@@ -69,6 +69,16 @@ function runBatch() {
       Logger.log(`矛盾チェックに失敗 (処理は続行): ${e.stack || e}`);
     }
 
+    // ── ほなみや注文確認票への転記 (v2.22) ────────────────────
+    // 専用タブ1枚をまるごと書き換えるだけ。月のカレンダー表は触らない。
+    // 転記先が未設定・.xlsx のまま・権限なし でもバッチは止めない。
+    try {
+      const ex = exportOrdersToHonamiya(now);
+      dlog(formatOrderExportResult_(ex));
+    } catch (e) {
+      Logger.log(`注文確認票への転記に失敗 (処理は続行): ${e.stack || e}`);
+    }
+
     dlog(`=== Batch end ===`);
     setLastProcessedAt(now);
   } catch (e) {
@@ -343,6 +353,10 @@ function onOpen() {
     .addSeparator()
     .addItem('💰 給料を計算 (前月)',                 'calcStaffPayPrevMonth')
     .addItem('💰 給料を計算 (当月・見込み)',          'calcStaffPayThisMonth')
+    .addItem('🩺 仕出し判定の診断 (前月)',            'diagnoseCheckinPay')
+    .addSeparator()
+    .addItem('📤 注文確認票へ転記',                   'runOrderExportOnly')
+    .addItem('🔍 転記内容を確認 (書き込みなし)',       'dumpOrderExport')
     .addSeparator()
     .addItem('🎨 条件付き書式を設定 (Options)',       'setupConditionalFormatting')
     .addItem('🎨 条件付き書式を設定 (清掃ボード)',    'setupCleaningFormatting')
