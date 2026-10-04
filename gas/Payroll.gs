@@ -1483,3 +1483,239 @@ function diagnoseSetupBonus(ym) {
   Logger.log(L.join('\n'));
   return { month: month, guests: sumG, sets: sumS, hitGuests: hitG, hitSets: hitS, mismatch: mismatch };
 }
+
+// ── 食事予約表と清掃ボードの突合診断 ────────────────────────
+
+/**
+ * 「食事予約表と清掃ボードで内容が違う」を調べる。
+ *
+ *   diagnoseMealMatch()              … 今日
+ *   diagnoseMealMatch('2026-10-04')  … 日付指定
+ *
+ *  指定日について、4つの情報源を並べて出す。書き込みはしない。
+ *    ① 清掃ボード      … その日の 1F / 2F の行 (宿泊者名・泊人・状態・食事)
+ *    ② LatestOptions   … 宿泊日がその日の行 (論理削除された行も理由つきで出す)
+ *    ③ CleaningOverride… 手書きの追記
+ *    ④ LodgifyBookings … チェックインがその日の予約 (アドオン込み)
+ *
+ *  そのうえで、よくあるズレの原因を名指しで出す:
+ *    ・LatestOptions にあるのにボードに出ていない (部屋違い・滞在が無い)
+ *    ・ボードに出ているのに LatestOptions にその日の行が無い
+ *      (連泊の別日にフォームが出ている / CleaningOverride 由来)
+ *    ・同じ宿泊者名が別の日付で LatestOptions に入っている
+ *      → フォームの宿泊日の書き間違いはこれで分かる
+ */
+function diagnoseMealMatch(dateStr) {
+  const date = dateStr ? fmtDate(toDate(dateStr)) : fmtDate(todayJst());
+  const L = [];
+  L.push('════════════════════════════════════════════');
+  L.push(`  ${date} 食事予約表 と 清掃ボード の突合  ※書き込みなし`);
+  L.push('════════════════════════════════════════════');
+
+  // ① 清掃ボード
+  const board = readBoardForPayroll_().filter(r => r.date === date);
+  L.push('');
+  L.push('── ① 清掃ボード ───────────────────────────');
+  if (!board.length) {
+    L.push('   その日の行がありません。');
+  }
+  board.forEach(r => {
+    L.push(`   ${r.room}  状態=${r.state || '-'}  泊人=${r.guests || '-'}  宿泊者=${r.guestName || '-'}`);
+    L.push(`        食事(R列): ${r.meal || '(空)'}`);
+    if (r.note) L.push(`        備考: ${r.note}`);
+  });
+
+  // ② LatestOptions
+  const opt = readOptionRowsWithDeleted_();
+  const sameDay = opt.filter(o => o.checkin === date);
+  L.push('');
+  L.push('── ② 食事予約表 (LatestOptions) ────────────');
+  if (!sameDay.length) L.push('   宿泊日がその日の行はありません。');
+  sameDay.forEach(o => {
+    L.push(`   ${o.room || '(部屋なし)'}  ${o.guestName || '(氏名なし)'}  人数=${o.guests || '-'}`
+      + (o.deleted ? '   ★論理削除' : ''));
+    L.push(`        食事: ${o.meal || '(空)'}`);
+    if (o.option) L.push(`        オプション: ${o.option}`);
+    L.push(`        フォーム送信: ${o.formTs || '-'}`);
+  });
+
+  // ③ CleaningOverride
+  L.push('');
+  L.push('── ③ CleaningOverride (手書き) ─────────────');
+  const ovr = readOverrideForDiag_(date);
+  if (!ovr.length) L.push('   その日の行はありません。');
+  ovr.forEach(o => L.push(`   ${o.room}  人数=${o.guests || '-'}  食事=${o.meal || '(空)'}  メモ=${o.memo || '-'}`));
+
+  // ④ Lodgify
+  L.push('');
+  L.push('── ④ Lodgify 予約 (チェックインがその日) ────');
+  const ldg = readLodgifyForDiag_(date);
+  if (!ldg.length) L.push('   その日の予約はありません。');
+  ldg.forEach(b => {
+    L.push(`   ${b.room}  ${b.guestName}  人数=${b.guests}  ${b.status}`
+      + (b.deleted ? '   ★論理削除(キャンセル等)' : ''));
+    if (b.addons) L.push(`        予約時オプション: ${b.addons}`);
+  });
+
+  // ── 突合 ──────────────────────────────────────
+  L.push('');
+  L.push('── ズレの原因 ─────────────────────────────');
+  const found = [];
+
+  const boardByRoom = {};
+  board.forEach(r => { boardByRoom[r.room] = r; });
+
+  // (a) LatestOptions にあるのにボードに出ていない
+  sameDay.forEach(o => {
+    if (o.deleted || !o.meal) return;
+    const b = boardByRoom[o.room];
+    if (!b) {
+      found.push(`${o.room} ${o.guestName}: 食事予約はあるが、清掃ボードに ${o.room} の行が無い`);
+      return;
+    }
+    if (!b.meal) {
+      found.push(`${o.room} ${o.guestName}: 食事予約はあるが、ボードの食事列が空。`
+        + `ボード側の状態=${b.state}/宿泊者=${b.guestName || '(未取得)'} — `
+        + '滞在と突合できていない (部屋違いか、その日に在室が無い)');
+      return;
+    }
+    if (b.meal.indexOf(o.meal) < 0) {
+      found.push(`${o.room} ${o.guestName}: 食事予約とボードの食事が一致しない`);
+      found.push(`        予約表: ${o.meal}`);
+      found.push(`        ボード: ${b.meal}`);
+    }
+  });
+
+  // (b) ボードに食事があるのに、その日の LatestOptions が無い
+  board.forEach(b => {
+    if (!b.meal) return;
+    const hit = sameDay.filter(o => !o.deleted && o.room === b.room && o.meal);
+    if (hit.length) return;
+    found.push(`${b.room}: ボードに食事があるが、宿泊日=${date} の食事予約が無い`);
+    found.push(`        ボード: ${b.meal}`);
+    found.push('        → 連泊の別の日でフォームが出ている / CleaningOverride 由来 / Lodgifyアドオン由来');
+  });
+
+  // (c) 同じ宿泊者名が別の日付で入っていないか (フォームの宿泊日の書き間違い)
+  board.forEach(b => {
+    const nm = String(b.guestName || '').trim();
+    if (!nm || nm === '(氏名未取得)') return;
+    const others = opt.filter(o => o.guestName && o.checkin !== date
+      && sameGuestName_(o.guestName, nm)
+      && Math.abs(daysBetweenDiag_(o.checkin, date)) <= 14);
+    others.forEach(o => {
+      found.push(`${b.room} ${nm}: 同じ名前が 宿泊日=${o.checkin} ${o.room || '(部屋なし)'} で`
+        + `食事予約表に入っている${o.deleted ? ' (論理削除済み)' : ''}`);
+      found.push(`        その行の食事: ${o.meal || '(空)'}`);
+      found.push('        → フォームの宿泊日か部屋の書き間違いの可能性');
+    });
+  });
+
+  // (d) 論理削除された行に食事が入っている
+  sameDay.forEach(o => {
+    if (!o.deleted || !o.meal) return;
+    found.push(`${o.room || '(部屋なし)'} ${o.guestName}: 論理削除された行に食事予約が残っている`);
+    found.push(`        ${o.meal}`);
+    found.push('        → 予約がキャンセル/変更された。ほなみやへの発注取消が要るかもしれない');
+  });
+
+  if (found.length) found.forEach(x => L.push(`   ⚠ ${x}`));
+  else L.push('   食事予約表と清掃ボードの食事は一致しています。');
+
+  L.push('');
+  L.push('── どちらが正か ───────────────────────────');
+  L.push('   食事予約表(LatestOptions)が正。清掃ボードの食事列(R)は');
+  L.push('   そこから (宿泊日, 部屋) で突合して転記しているだけ。');
+  L.push('   ボードに出ていない = 突合に失敗している、という意味。');
+  L.push('   手で直すときは CleaningOverride の食事列に書くこと。');
+  L.push('   ★ボードのR列に直接書いても毎時バッチで消えます。');
+
+  Logger.log(L.join('\n'));
+  return { date: date, board: board, options: sameDay, issues: found };
+}
+
+/** LatestOptions を論理削除された行も含めて読む (診断用)。 */
+function readOptionRowsWithDeleted_() {
+  const sh = SpreadsheetApp.getActive().getSheetByName(CONFIG.SHEET.LATEST_OPT);
+  if (!sh) return [];
+  const last = sh.getLastRow();
+  if (last < 2) return [];
+  const C = CONFIG.COL_OPT;
+  const rows = sh.getRange(2, 1, last - 1, C.FORM_JSON).getValues();
+  const out = [];
+  rows.forEach(r => {
+    const d = fmtDate(r[C.CHECKIN - 1]);
+    if (!d) return;
+    const ts = toDate(r[C.FORM_TS - 1]);
+    out.push({
+      checkin:   d,
+      room:      String(r[C.ROOM - 1]         || '').trim(),
+      guestName: String(r[C.GUEST_NAME - 1]   || '').trim(),
+      guests:    String(r[C.GUESTS - 1]       || '').trim(),
+      meal:      String(r[C.MEAL_SUMMARY - 1] || '').trim(),
+      option:    String(r[C.OPT_SUMMARY - 1]  || '').trim(),
+      deleted:   r[C.DELETED_FLAG - 1] === '削除',
+      formTs:    (ts && !isNaN(ts.getTime())) ? fmtDateTime(ts) : '',
+    });
+  });
+  return out;
+}
+
+/** CleaningOverride の指定日の行 (診断用)。 */
+function readOverrideForDiag_(date) {
+  const sh = SpreadsheetApp.getActive().getSheetByName(CONFIG.SHEET.CLEAN_OVERRIDE);
+  if (!sh) return [];
+  const last = sh.getLastRow();
+  if (last < 2) return [];
+  const C = CONFIG.COL_OVR;
+  const rows = sh.getRange(2, 1, last - 1, C.MEAL).getValues();
+  const out = [];
+  rows.forEach(r => {
+    if (fmtDate(r[C.CHECKIN - 1]) !== date) return;
+    out.push({
+      room:   String(r[C.ROOM - 1]   || '').trim(),
+      guests: String(r[C.GUESTS - 1] || '').trim(),
+      memo:   String(r[C.MEMO - 1]   || '').trim(),
+      meal:   String(r[C.MEAL - 1]   || '').trim(),
+    });
+  });
+  return out;
+}
+
+/** LodgifyBookings の指定日チェックインの行 (診断用)。 */
+function readLodgifyForDiag_(date) {
+  const sh = SpreadsheetApp.getActive().getSheetByName(CONFIG.SHEET.LODGIFY);
+  if (!sh) return [];
+  const last = sh.getLastRow();
+  if (last < 2) return [];
+  const C = CONFIG.COL_LDG;
+  const rows = sh.getRange(2, 1, last - 1, CONFIG.LDG_WIDTH).getValues();
+  const out = [];
+  rows.forEach(r => {
+    if (fmtDate(r[C.CHECKIN - 1]) !== date) return;
+    out.push({
+      room:      String(r[C.ROOM - 1]       || '').trim(),
+      guestName: String(r[C.GUEST_NAME - 1] || '').trim(),
+      guests:    String(r[C.GUESTS - 1]     || '').trim(),
+      status:    String(r[C.STATUS - 1]     || '').trim(),
+      deleted:   r[C.DELETED_FLAG - 1] === '削除',
+      addons:    String(r[C.ADDONS - 1]     || '').trim(),
+    });
+  });
+  return out;
+}
+
+/** 氏名のゆるい一致 (大小・空白・全半角を無視)。 */
+function sameGuestName_(a, b) {
+  const norm = x => toHalfWidth(String(x || '')).toLowerCase().replace(/\s+/g, '');
+  const x = norm(a), y = norm(b);
+  if (!x || !y) return false;
+  return x === y || x.indexOf(y) >= 0 || y.indexOf(x) >= 0;
+}
+
+/** 'yyyy-MM-dd' 同士の日数差。 */
+function daysBetweenDiag_(a, b) {
+  const da = toDate(a), db = toDate(b);
+  if (!da || !db) return 999;
+  return Math.round((da.getTime() - db.getTime()) / 86400000);
+}
