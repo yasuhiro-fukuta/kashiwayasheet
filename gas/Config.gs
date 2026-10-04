@@ -749,6 +749,7 @@ const CONFIG = {
       //  特シートに同じ (対応者, 日) の pt 行があるときは
       //  特シート側を正として、こちらの 6,000円 は付けない。
       //  (同じ作業を2回払わないため)
+      //  ★DEEP.USE_SHEET が false の間は特シートを読まないので効かない。
       PREFER_DEEP_SHEET: true,
     },
 
@@ -799,8 +800,14 @@ const CONFIG = {
       PER_ROOM: true,
     },
 
-    // 客室徹底清掃業務 (特シート)
+    // 客室徹底清掃業務
     DEEP: {
+      //  ★2026-10 発注者指示により「特」シートは給料計算では無視する。
+      //    徹底清掃の報酬は、清掃ボードで両階とも「特別」になっている日
+      //    (= SPECIAL_DAY) からだけ出す。
+      //    特シートを使う運用に戻すときは true にする。
+      USE_SHEET:  false,
+
       SHEET:      '特',
       BASE_PT:    15,     // この pt で満額
       MAX_PT:     20,     // ここまでは比例で増額
@@ -820,10 +827,41 @@ const CONFIG = {
       //  1件の数え方。契約書に「同日に複数組でも1件」と明記されている。
       COUNT_UNIT: 'day',
 
-      //  仕出し(夕食)があるかの判定に使う追加表記。
-      //  CONFIG.MEALS の kind:'dinner' のラベルは自動で見るので、
-      //  ここには CleaningOverride に手書きされる日本語だけ足す。
-      DINNER_HINTS: [/しゃぶ/, /すき焼/, /すきやき/, /鍋/, /夕食/, /仕出/, /ちらし/, /チラシ/],
+      //  仕出し(夕食)があるかの判定。
+      //
+      //  ★食事サマリは「, 」区切りの品目の並びで、表記がそろっていない。
+      //    実データの例:
+      //      Wagyu Sukiyaki(2人前), Ochazuke Breakfast(2人前)   ← 現行フォーム
+      //      朝食 xYes, Chicken Hot Pot Set(2人用), 朝食 x1      ← 旧フォーム
+      //      朝食 xYes, Shabu(2人用), 朝食 x2                    ← 旧フォーム(略称)
+      //      (paid) Shabu-Shabu(2人前)                          ← Lodgifyアドオン
+      //      しゃぶしゃぶ1人前                                   ← CleaningOverride 手書き
+      //    判定は品目ごとに行う。まず CONFIG.MEALS のラベルに当て、
+      //    当たらなければ下のキーワードで見る。
+      //
+      //  ★「⚠」以降は自由記述の注記で注文ではない。判定前に切り落とす。
+      //    (例: 「朝食 x1 ⚠ I would be interested in the Wagyu set...」を
+      //     夕食と誤判定しないため)
+      //
+      //  朝食は先に判定する。Ochazuke Breakfast を夕食に取り違えないため。
+      BREAKFAST_HINTS: [/朝食/, /breakfast/i, /ochazuke/i, /茶漬/],
+      DINNER_HINTS: [
+        /shabu/i, /sukiyaki/i, /hot\s*pot/i, /chirashi/i, /\bbbq\b/i, /nabe/i,
+        /しゃぶ/, /すき焼/, /すきやき/, /牛すき/, /和牛/, /鍋/, /ちらし/, /チラシ/,
+        /夕食/, /仕出/, /焼肉/, /弁当/, /ビーグル/, /ビーガン/,
+      ],
+
+      //  品目を区切る文字
+      ITEM_SEPARATORS: /[,、\/]+/,
+
+      //  注記の始まり (ここから後ろは注文として読まない)
+      NOTE_MARKER: '⚠',
+
+      //  ★清掃ボードの食事列(R)だけでなく LatestOptions も直接見る。
+      //    ボードのR列は「フォームの行が滞在に突合できたとき」しか
+      //    埋まらないため、突合に失敗した注文を取りこぼす。
+      //    チェックイン対応は日単位なので、部屋は問わず同じ日で見る。
+      USE_LATEST_OPTIONS: true,
 
       //  状態(G列)が到着日かどうかの判定
       ARRIVAL_PATTERNS: [/IN/],

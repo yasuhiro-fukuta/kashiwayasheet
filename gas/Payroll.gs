@@ -51,8 +51,11 @@ function calcStaffPayThisMonth() {
 function calcStaffPay(ym) {
   const month = normalizePayrollMonth_(ym);
   const board = readBoardForPayroll_();
-  const deep  = readDeepCleanForPayroll_();
-  const res   = computeStaffPay(board, deep, month);
+  //  ★徹底清掃は「特」シートを読まない (発注者指示)。
+  //    清掃ボードで両階とも「特別」の日からだけ出す。
+  const deep  = CONFIG.PAYROLL.DEEP.USE_SHEET ? readDeepCleanForPayroll_() : [];
+  const opts  = CONFIG.PAYROLL.CHECKIN.USE_LATEST_OPTIONS ? readOptionsForPayroll_() : [];
+  const res   = computeStaffPay(board, deep, month, opts);
   logStaffPay_(res);
   return res;
 }
@@ -110,6 +113,38 @@ function readDeepCleanForPayroll_() {
   })).filter(r => r.task || r.assignee);
 }
 
+/**
+ * LatestOptions を読む (チェックイン対応の仕出し判定用)。
+ *  ★清掃ボードの食事列(R)は、フォームの行が滞在に突合できたときしか
+ *    埋まらない。突合に失敗した注文を取りこぼすので、こちらも直接見る。
+ *  論理削除された行は返さない。
+ */
+function readOptionsForPayroll_() {
+  const sh = SpreadsheetApp.getActive().getSheetByName(CONFIG.SHEET.LATEST_OPT);
+  if (!sh) return [];
+  const last = sh.getLastRow();
+  if (last < 2) return [];
+
+  const C = CONFIG.COL_OPT;
+  const rows = sh.getRange(2, 1, last - 1, C.FORM_JSON).getValues();
+
+  const out = [];
+  rows.forEach(r => {
+    if (r[C.DELETED_FLAG - 1] === '削除') return;
+    //  ★日付は fmtDate を必ず通す。シートのTZが America/Los_Angeles の
+    //    ため生の Date だと1日ずれる (HANDOFF.md 参照)。
+    const d = fmtDate(r[C.CHECKIN - 1]);
+    if (!d) return;
+    out.push({
+      checkin:   d,
+      room:      String(r[C.ROOM - 1]         || '').trim(),
+      guestName: String(r[C.GUEST_NAME - 1]   || '').trim(),
+      meal:      String(r[C.MEAL_SUMMARY - 1] || '').trim(),
+    });
+  });
+  return out;
+}
+
 // ── 計算本体 (シートに触らない。テストから直接呼べる) ──────────
 
 /**
@@ -117,8 +152,18 @@ function readDeepCleanForPayroll_() {
  * @param {Array<Object>} deep  readDeepCleanForPayroll_() の出力
  * @param {string} month 'yyyy-MM'
  */
-function computeStaffPay(board, deep, month) {
+function computeStaffPay(board, deep, month, optionRows) {
   const P = CONFIG.PAYROLL;
+
+  //  LatestOptions の食事サマリを日付ごとにまとめておく。
+  //  チェックイン対応は日単位なので部屋は問わない。
+  const optMealsByDate = {};
+  (optionRows || []).forEach(o => {
+    if (!o || !o.meal) return;
+    if (String(o.checkin).slice(0, 7) !== month) return;
+    if (!optMealsByDate[o.checkin]) optMealsByDate[o.checkin] = [];
+    optMealsByDate[o.checkin].push(o);
+  });
 
   // 日付+部屋で引けるようにしておく (直前宿泊者の人数を遡るため)
   const byKey = {};
@@ -305,11 +350,32 @@ function computeStaffPay(board, deep, month) {
     if (!isArrivalState_(r.state)) return;
     const k = r.server + '|' + r.date;
     if (!nightByDay[k]) {
-      nightByDay[k] = { server: r.server, date: r.date, dinner: false, rooms: [] };
+      nightByDay[k] = {
+        server: r.server, date: r.date, dinner: false, rooms: [],
+        dinnerSrc: [], boardMeals: [], optMeals: [],
+      };
     }
     nightByDay[k].rooms.push(r.room);
-    if (hasDinner_(r.meal)) nightByDay[k].dinner = true;
+    if (r.meal) nightByDay[k].boardMeals.push(`${r.room}: ${r.meal}`);
+    if (hasDinner_(r.meal)) {
+      nightByDay[k].dinner = true;
+      if (nightByDay[k].dinnerSrc.indexOf('清掃ボード') < 0) {
+        nightByDay[k].dinnerSrc.push('清掃ボード');
+      }
+    }
     if (isHalfNight_(r.nightHalf)) nightByDay[k].half = true;
+  });
+
+  //  清掃ボードの食事列で拾えなかった分を LatestOptions から補う。
+  Object.keys(nightByDay).forEach(k => {
+    const u = nightByDay[k];
+    (optMealsByDate[u.date] || []).forEach(o => {
+      u.optMeals.push(`${o.room || '?'} ${o.guestName}: ${o.meal}`);
+      if (hasDinner_(o.meal)) {
+        u.dinner = true;
+        if (u.dinnerSrc.indexOf('LatestOptions') < 0) u.dinnerSrc.push('LatestOptions');
+      }
+    });
   });
 
   Object.keys(nightByDay).forEach(k => {
@@ -329,7 +395,18 @@ function computeStaffPay(board, deep, month) {
       date: u.date, rooms: u.rooms.join('+'),
       type: u.dinner ? 'B(CI+仕出し)' : 'A(CIのみ)',
       amount: amount, full: full, half: half,
+      dinnerSrc:  u.dinnerSrc.join('+'),
+      boardMeals: u.boardMeals.join(' | '),
+      optMeals:   u.optMeals.join(' | '),
     });
+
+    //  食事の文字列はあるのに夕食と判定しなかった日は見落としの疑いがある。
+    //  金額に関わるので必ず表に出す。
+    if (!u.dinner && (u.boardMeals.length || u.optMeals.length)) {
+      warnings.push(`仕出し判定: ${u.date} ${u.server} は食事の記載があるが`
+        + `夕食と判定しなかった → A(${yenP_(P.CHECKIN.PRICE_A)}) で計算した。`
+        + ` 内容: ${u.boardMeals.concat(u.optMeals).join(' | ')}`);
+    }
   });
 
   // ── 契約の有無で足切り + 合計 ───────────────────────────
@@ -414,20 +491,47 @@ function isArrivalState_(state) {
 }
 
 /**
- * 食事列(R)に夕食(仕出し)が入っているか。
- *  ・CONFIG.MEALS の kind:'dinner' のラベルを見る
- *    (Lodgify由来の "(paid) " 接頭辞が付いていても部分一致で拾える)
- *  ・CleaningOverride に手書きされる日本語は DINNER_HINTS で拾う
- *  ・朝食 (Ochazuke Breakfast) は仕出しに数えない
+ * 食事サマリを品目ごとに切り分ける。
+ *  ・「⚠」以降は自由記述の注記なので切り落とす (注文ではない)。
+ *  ・「, 」「、」「 / 」で区切る。
  */
+function splitMealItems_(meal) {
+  const K = CONFIG.PAYROLL.CHECKIN;
+  const body = String(meal || '').split(K.NOTE_MARKER)[0];
+  return body.split(K.ITEM_SEPARATORS).map(x => x.trim()).filter(x => x);
+}
+
+/**
+ * 品目1つを 'dinner' / 'breakfast' / 'other' に分類する。
+ *  ① CONFIG.MEALS のラベルに当たればその kind を使う
+ *     ("(paid) Shabu-Shabu(2人前)" や "Chicken Hot Pot Set(2人用)" も拾える)
+ *  ② 朝食の表記 (Ochazuke Breakfast を夕食に取り違えないため先に見る)
+ *  ③ 夕食のキーワード ("Shabu(2人用)" のような略称や手書きの日本語)
+ */
+function classifyMealItem_(item) {
+  const s = String(item || '').trim();
+  if (!s) return 'other';
+  //  ★注文確認票の商品名は全角が混ざる (「ＢＢＱセットおにぎり」など)。
+  //    半角化したものも併せて見る。カナは半角のまま残るので
+  //    「しゃぶ」「鍋」の判定には影響しない。
+  const half = toHalfWidth(s);
+  const low  = s.toLowerCase();
+  const lowH = half.toLowerCase();
+
+  for (let i = 0; i < CONFIG.MEALS.length; i++) {
+    const m = CONFIG.MEALS[i];
+    const label = String(m.label).toLowerCase();
+    if (low.indexOf(label) >= 0 || lowH.indexOf(label) >= 0) return m.kind;
+  }
+  const K = CONFIG.PAYROLL.CHECKIN;
+  if (K.BREAKFAST_HINTS.some(re => re.test(s) || re.test(half))) return 'breakfast';
+  if (K.DINNER_HINTS.some(re => re.test(s) || re.test(half)))    return 'dinner';
+  return 'other';
+}
+
+/** 食事サマリに夕食(仕出し)が1品でも入っているか。 */
 function hasDinner_(meal) {
-  const s = String(meal || '');
-  if (!s) return false;
-  const low = s.toLowerCase();
-  const hit = CONFIG.MEALS.some(m =>
-    m.kind === 'dinner' && low.indexOf(String(m.label).toLowerCase()) >= 0);
-  if (hit) return true;
-  return CONFIG.PAYROLL.CHECKIN.DINNER_HINTS.some(re => re.test(s));
+  return splitMealItems_(meal).some(x => classifyMealItem_(x) === 'dinner');
 }
 
 /**
@@ -686,7 +790,10 @@ function logStaffPay_(res) {
       L.push(`     ※${P.CHECKIN.TAX_NOTE}`);
       p.checkin.days.forEach(d => {
         L.push(`       ${d.date}  ${d.rooms}  ${d.type}  ${yenP_(d.amount)}`
+          + (d.dinnerSrc ? `  [${d.dinnerSrc}]` : '')
           + (d.half ? `  半日 (${yenP_(d.full)} → ${yenP_(d.amount)})` : ''));
+        const detail = [d.boardMeals, d.optMeals].filter(x => x).join('  ///  ');
+        if (detail) L.push(`           食事: ${detail}`);
       });
     }
 
@@ -714,7 +821,8 @@ function logStaffPay_(res) {
   L.push(`  両階とも「特別」の日   : ${P.SPECIAL_DAY.BOTH_FLOORS_PT}pt 相当`
     + ` = ${yenP_(deepCleanAmount_(P.SPECIAL_DAY.BOTH_FLOORS_PT).amount)} (セットアップは付けない)`);
   L.push(`  片階だけ「特別」の日   : 布団${P.SPECIAL_DAY.ONE_FLOOR_FUTONS}個の入替清掃として扱う`
-    + ` (= ${yenP_(P.SETUP.UNIT_PRICE)} / 特別報酬なし)`);
+    + ` (= その日のセットアップ1件に含める / 特別報酬なし)`);
+  L.push(`  「特」シート           : ${P.DEEP.USE_SHEET ? '読む' : '読まない (発注者指示)'}`);
   L.push(`  特別報酬「その値」     : ${P.BONUS.BASE}`);
   L.push(`  特別報酬の単位         : ${P.BONUS.PER_ROOM ? '部屋ごとに積む' : '日ごとに1回'}`);
   L.push(`  清掃達成率の効かせ方   : ${P.SHORTFALL.RATE_MODE}`
@@ -727,4 +835,154 @@ function logStaffPay_(res) {
 
   Logger.log(L.join('\n'));
   return L.join('\n');
+}
+
+// ── 仕出し判定の診断 ────────────────────────────────────────
+
+/**
+ * 「接客のほとんどが仕出しなしになっている」を実データで確かめる診断。
+ *
+ *  指定月の、接客担当(D列)が入っている日ごとに
+ *    ・清掃ボードの食事列(R) の中身
+ *    ・LatestOptions の同日の食事サマリ
+ *    ・それを品目ごとに分解した判定結果 (夕食/朝食/その他)
+ *    ・最終的な A / B と、判定の出どころ
+ *  を全部出す。書き込みはしない。
+ *
+ *  末尾に、取りこぼしの疑いがあるものを3種類に分けて出す:
+ *    ① 食事の記載があるのに夕食と判定しなかった日
+ *       → 表記の対応漏れ。CONFIG.MEALS か DINNER_HINTS を直す
+ *    ② LatestOptions に注文があるのに清掃ボードのR列が空の日
+ *       → フォームと滞在の突合が失敗している
+ *    ③ 接客担当が入っているのに食事の記載がどこにも無い日
+ *       → そもそも注文が無い (= 正しくA) か、
+ *         WhatsApp等で受けた注文が CleaningOverride に未記入
+ */
+function diagnoseCheckinPay(ym) {
+  const month = normalizePayrollMonth_(ym || Utilities.formatDate(
+    new Date(todayJst().getFullYear(), todayJst().getMonth() - 1, 1), CONFIG.TZ, 'yyyy-MM'));
+
+  const board = readBoardForPayroll_();
+  const opts  = readOptionsForPayroll_();
+
+  const inMonth = d => String(d).slice(0, 7) === month;
+  const P = CONFIG.PAYROLL;
+
+  // 接客担当が入っている到着日を日ごとにまとめる
+  const days = {};
+  board.filter(r => inMonth(r.date)).forEach(r => {
+    if (!r.server || isIgnoredStaffName_(r.server)) return;
+    if (!isArrivalState_(r.state)) return;
+    const k = r.date + '|' + r.server;
+    if (!days[k]) {
+      days[k] = { date: r.date, server: r.server, rows: [], optRows: [] };
+    }
+    days[k].rows.push(r);
+  });
+
+  // 同じ日の LatestOptions を付ける (日単位なので部屋は問わない)
+  const optByDate = {};
+  opts.filter(o => inMonth(o.checkin)).forEach(o => {
+    if (!optByDate[o.checkin]) optByDate[o.checkin] = [];
+    optByDate[o.checkin].push(o);
+  });
+  Object.keys(days).forEach(k => {
+    days[k].optRows = optByDate[days[k].date] || [];
+  });
+
+  const keys = Object.keys(days).sort();
+  const L = [];
+  L.push('════════════════════════════════════════════');
+  L.push(`  ${month} 仕出し(夕食)判定の診断  ※書き込みなし`);
+  L.push('════════════════════════════════════════════');
+  L.push(`清掃ボード ${month} の行: ${board.filter(r => inMonth(r.date)).length}`);
+  L.push(`LatestOptions ${month} の有効行: ${opts.filter(o => inMonth(o.checkin)).length}`);
+  L.push(`接客担当が入っている到着日: ${keys.length}`);
+  L.push('');
+
+  const missLabel = [];   // ① 食事はあるが夕食と判定しなかった
+  const missBoard = [];   // ② LatestOptions にあるがボードR列が空
+  const noMeal    = [];   // ③ 食事の記載がどこにも無い
+  let nA = 0, nB = 0;
+
+  keys.forEach(k => {
+    const u = days[k];
+    const boardMeals = u.rows.filter(r => r.meal);
+    const optMeals   = u.optRows.filter(o => o.meal);
+
+    let dinner = false;
+    const srcs = [];
+    const lines = [];
+
+    boardMeals.forEach(r => {
+      const items = splitMealItems_(r.meal);
+      const judged = items.map(it => `${it} →${classifyMealItem_(it)}`);
+      if (items.some(it => classifyMealItem_(it) === 'dinner')) {
+        dinner = true;
+        if (srcs.indexOf('清掃ボード') < 0) srcs.push('清掃ボード');
+      }
+      lines.push(`      ボード ${r.room}: ${r.meal}`);
+      lines.push(`               ${judged.join('  /  ')}`);
+    });
+
+    optMeals.forEach(o => {
+      const items = splitMealItems_(o.meal);
+      const judged = items.map(it => `${it} →${classifyMealItem_(it)}`);
+      if (items.some(it => classifyMealItem_(it) === 'dinner')) {
+        dinner = true;
+        if (srcs.indexOf('LatestOptions') < 0) srcs.push('LatestOptions');
+      }
+      lines.push(`      LatestOptions ${o.room || '?'} ${o.guestName}: ${o.meal}`);
+      lines.push(`               ${judged.join('  /  ')}`);
+    });
+
+    const verdict = dinner
+      ? `B(CI+仕出し) ${yenP_(P.CHECKIN.PRICE_B)}`
+      : `A(CIのみ)    ${yenP_(P.CHECKIN.PRICE_A)}`;
+    if (dinner) nB++; else nA++;
+
+    L.push(`${u.date} ${u.server}  部屋=${u.rows.map(r => r.room).join('+')}`
+      + `  → ${verdict}${srcs.length ? '  [' + srcs.join('+') + ']' : ''}`);
+    if (lines.length) lines.forEach(x => L.push(x));
+    else L.push('      食事の記載なし (ボードR列・LatestOptions ともに空)');
+
+    if (!dinner && (boardMeals.length || optMeals.length)) {
+      missLabel.push(`${u.date} ${u.server}: `
+        + boardMeals.map(r => r.meal).concat(optMeals.map(o => o.meal)).join(' | '));
+    }
+    if (optMeals.length && !boardMeals.length) {
+      missBoard.push(`${u.date} ${u.server}: `
+        + optMeals.map(o => `${o.room || '?'} ${o.guestName} → ${o.meal}`).join(' | '));
+    }
+    if (!boardMeals.length && !optMeals.length) {
+      noMeal.push(`${u.date} ${u.server} (${u.rows.map(r => r.room + ':' + (r.guestName || '?')).join(', ')})`);
+    }
+  });
+
+  L.push('');
+  L.push(`集計: A ${nA}件 / B ${nB}件`
+    + `  = ${yenP_(nA * P.CHECKIN.PRICE_A + nB * P.CHECKIN.PRICE_B)}`);
+
+  L.push('');
+  L.push('── ① 食事の記載があるのに夕食と判定しなかった日 ─────────');
+  L.push('   表記の対応漏れ。CONFIG.MEALS か CHECKIN.DINNER_HINTS を直す。');
+  if (missLabel.length) missLabel.forEach(x => L.push(`   ⚠ ${x}`));
+  else L.push('   なし');
+
+  L.push('');
+  L.push('── ② LatestOptions に注文があるのにボードR列が空の日 ──────');
+  L.push('   フォームと滞在の突合が失敗している (部屋違い・日付違いなど)。');
+  L.push('   ★給料の判定は LatestOptions も見ているので金額は正しく出る。');
+  if (missBoard.length) missBoard.forEach(x => L.push(`   ⚠ ${x}`));
+  else L.push('   なし');
+
+  L.push('');
+  L.push('── ③ 食事の記載がどこにも無い日 ───────────────────────');
+  L.push('   注文が無ければ正しく A。WhatsApp等で受けた注文があるなら');
+  L.push('   CleaningOverride の食事列に書くと反映される。');
+  if (noMeal.length) noMeal.forEach(x => L.push(`   ・${x}`));
+  else L.push('   なし');
+
+  Logger.log(L.join('\n'));
+  return { month: month, a: nA, b: nB, missLabel: missLabel, missBoard: missBoard, noMeal: noMeal };
 }
