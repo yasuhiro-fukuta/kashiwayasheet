@@ -843,7 +843,7 @@ function addSetupBonus_(p, r, byKey, warnings) {
 
   // 次回宿泊者
   if (isArrivalState_(r.state)) {
-    const n = numOrZero(toHalfWidth(r.guests));
+    const n = bonusHeadcount_(r);
     if (n > th) {
       p.bonus.headcount += n * B.NEXT_RATE;
       p.bonus.excess    += (n - th) * B.NEXT_RATE;
@@ -858,7 +858,7 @@ function addSetupBonus_(p, r, byKey, warnings) {
   const prevDate = addDaysStr(r.date, -1);
   const prev = byKey[prevDate + '_' + r.room];
   if (prev) {
-    const pn = numOrZero(toHalfWidth(prev.guests));
+    const pn = bonusHeadcount_(prev);
     if (pn > th) {
       p.bonus.headcount += pn * B.PREV_RATE;
       p.bonus.excess    += (pn - th) * B.PREV_RATE;
@@ -1013,6 +1013,16 @@ function padPct_(rate) {
 function pctP_(rate) {
   if (rate === null || rate === undefined) return '未記入';
   return Math.round(rate * 1000) / 10 + '%';
+}
+
+/**
+ * 特別報酬の判定に使う人数を1行から採る。
+ *  CONFIG.PAYROLL.BONUS.SOURCE で F列(泊人) か C列(べ) を選ぶ。
+ */
+function bonusHeadcount_(row) {
+  if (!row) return 0;
+  const v = (CONFIG.PAYROLL.BONUS.SOURCE === 'sets') ? row.setGuests : row.guests;
+  return numOrZero(toHalfWidth(v));
 }
 
 function bonusAmount_(p) {
@@ -1329,4 +1339,102 @@ function diagnoseCheckinPay(ym) {
     missLabel: missLabel, missBoard: missBoard,
     missOnlyOrder: missOnlyOrder, noMeal: noMeal,
   };
+}
+
+// ── 特別報酬の診断 ──────────────────────────────────────────
+
+/**
+ * 「4人を超えた日の加算が効いているか」を実データで確かめる診断。
+ *
+ *  清掃担当が入っている日ごとに、部屋単位で
+ *    当日(次回宿泊者) … F列 泊人 / C列 べ
+ *    前日(直前宿泊者) … 同じ部屋の前日の F列 / C列
+ *  を並べ、F列読みと C列読みの両方で加算額を出す。書き込みはしない。
+ *
+ *  ★加算が ¥0 の場合、それが「不具合」なのか「4人超の日が無かった」
+ *    だけなのかを、この一覧で区別できるようにするのが目的。
+ */
+function diagnoseSetupBonus(ym) {
+  const d0 = todayJst();
+  const month = normalizePayrollMonth_(ym || Utilities.formatDate(
+    new Date(d0.getFullYear(), d0.getMonth() - 1, 1), CONFIG.TZ, 'yyyy-MM'));
+
+  const B = CONFIG.PAYROLL.BONUS;
+  const th = B.THRESHOLD;
+  const board = readBoardForPayroll_();
+
+  const byKey = {};
+  board.forEach(r => { byKey[r.date + '_' + r.room] = r; });
+
+  const rows = board.filter(r =>
+    String(r.date).slice(0, 7) === month
+    && r.cleaner && !isIgnoredStaffName_(r.cleaner)
+    && (!CONFIG.PAYROLL.SETUP.REQUIRE_KIND || r.cleanKind)
+  ).sort((a, b) => (a.date + a.room) < (b.date + b.room) ? -1 : 1);
+
+  const L = [];
+  L.push('════════════════════════════════════════════');
+  L.push(`  ${month} 特別報酬 (4人超の加算) の診断  ※書き込みなし`);
+  L.push('════════════════════════════════════════════');
+  L.push(`しきい値: ${th}人を「超えた」場合に加算`);
+  L.push(`レート: 次回 ${yenP_(B.NEXT_RATE)} / 直前 ${yenP_(B.PREV_RATE)}  (その値=${B.BASE})`);
+  L.push(`いま使っている列: ${B.SOURCE === 'sets' ? 'C列 べ(布団の数)' : 'F列 泊人(宿泊人数)'}`);
+  L.push('');
+
+  let hitG = 0, hitS = 0, sumG = 0, sumS = 0;
+  const mismatch = [];
+
+  function amt(n, rate) {
+    if (n <= th) return 0;
+    return (B.BASE === 'excess') ? (n - th) * rate : n * rate;
+  }
+
+  rows.forEach(r => {
+    const prev = byKey[addDaysStr(r.date, -1) + '_' + r.room];
+    const arrival = isArrivalState_(r.state);
+
+    const curG = numOrZero(toHalfWidth(r.guests));
+    const curS = numOrZero(toHalfWidth(r.setGuests));
+    const prvG = prev ? numOrZero(toHalfWidth(prev.guests))    : 0;
+    const prvS = prev ? numOrZero(toHalfWidth(prev.setGuests)) : 0;
+
+    const g = (arrival ? amt(curG, B.NEXT_RATE) : 0) + amt(prvG, B.PREV_RATE);
+    const s = (arrival ? amt(curS, B.NEXT_RATE) : 0) + amt(prvS, B.PREV_RATE);
+    sumG += g; sumS += s;
+    if (g > 0) hitG++;
+    if (s > 0) hitS++;
+
+    const flag = (g > 0 || s > 0) ? ' ★加算あり' : '';
+    L.push(`${r.date} ${r.room} ${r.cleaner}  状態=${r.state || '(空)'}`
+      + `${arrival ? '' : ' (到着日でないので当日分は加算対象外)'}`);
+    L.push(`    当日  泊人=${curG || '-'}  べ=${curS || '-'}`
+      + `    前日  泊人=${prvG || '-'}  べ=${prvS || '-'}`);
+    L.push(`    → 泊人読み ${yenP_(g)}   べ読み ${yenP_(s)}${flag}`);
+
+    if (curG !== curS || prvG !== prvS) {
+      mismatch.push(`${r.date} ${r.room}  当日 泊人${curG}/べ${curS}  前日 泊人${prvG}/べ${prvS}`);
+    }
+  });
+
+  if (!rows.length) L.push('対象の清掃行がありません。');
+
+  L.push('');
+  L.push('────────────────────────────────────────────');
+  L.push(`${th}人を超えた行: 泊人読み ${hitG}件 / べ読み ${hitS}件`);
+  L.push(`特別報酬の合計 : 泊人読み ${yenP_(sumG)} / べ読み ${yenP_(sumS)}`);
+  if (!hitG && !hitS) {
+    L.push('');
+    L.push(`★どちらの読みでも0件でした。加算の仕組みが動いていないのではなく、`);
+    L.push(`  ${month} に ${th}人を超える日が無かっただけです。`);
+    L.push('  (しきい値は「4人を超えた場合」なので、ちょうど4人は対象外)');
+  }
+
+  L.push('');
+  L.push('── 泊人(F列)と べ(C列) が食い違う行 ──────────────');
+  L.push('   どちらで判定するかで金額が変わるのはこの行だけです。');
+  if (mismatch.length) mismatch.forEach(x => L.push(`   ⚠ ${x}`));
+  else L.push('   なし (どちらで判定しても同額)');
+
+  Logger.log(L.join('\n'));
+  return { month: month, guests: sumG, sets: sumS, hitGuests: hitG, hitSets: hitS, mismatch: mismatch };
 }
