@@ -421,7 +421,6 @@ function computeStaffPay(board, deep, month, optionRows, orderSheet) {
         setup:    { count: 0, rooms: 0, days: [], amount: 0, gross: 0, deduction: 0 },
         bonus:    { headcount: 0, excess: 0, lines: [] },
         deep:     { days: [], amount: 0 },
-        memo:     [],   // 作業メモ (V列・X列)。金額には効かせない
 
         checkin:  { a: 0, b: 0, days: [], amount: 0, halfDays: 0, halfCut: 0 },
         total:    0,
@@ -489,11 +488,11 @@ function computeStaffPay(board, deep, month, optionRows, orderSheet) {
       redo:  cut.redoText,
       redoN: cut.redoN,
       spot:  cut.spotText,
+      spotPlain: cut.spotPlain,
       gross: gross,
       net:   net,
       note:  cut.note,
     });
-    collectWorkMemo_(p, u.date, '清掃', u.rows);
     if (cut.note) {
       warnings.push(`清掃減額: ${u.date} ${u.cleaner} — ${cut.note}`);
     }
@@ -542,10 +541,10 @@ function computeStaffPay(board, deep, month, optionRows, orderSheet) {
         return;
       }
       const p = person(name);
-      collectWorkMemo_(p, date, '徹底清掃', sd.rows);
       p.deep.days.push({
         date: date, pt: CONFIG.PAYROLL.SPECIAL_DAY.BOTH_FLOORS_PT,
-        amount: net, note: cut.note, spot: cut.spotText,
+        amount: net, note: cut.note,
+        spot: cut.spotText, spotPlain: cut.spotPlain,
         tasks: [`清掃ボード: 全部屋が特別 (${sd.rows.map(r => r.room).join('+')})`
           + (gross !== net ? ` / 達成率 ${pctP_(cut.rate)} で ${yenP_(gross)}→${yenP_(net)}` : '')],
       });
@@ -952,6 +951,7 @@ function setupShortfall_(rows) {
     redoN:     redoN,
     spots:     spots,
     spotText:  spots.map(x => `${x.room}: ${x.text}`).join(' / '),
+    spotPlain: spots.map(x => x.text).join(' / '),
     deduction: Math.min(price, Math.round(deduction)),
     note:      note,
   };
@@ -966,25 +966,6 @@ function isHalfNight_(v) {
   if (!raw) return false;
   if (/^(?:FALSE|no|n|x|-|ー|―|なし|無し)$/i.test(raw)) return false;
   return CONFIG.PAYROLL.CHECKIN.HALF_TRUE_PATTERNS.some(re => re.test(raw));
-}
-
-/**
- * 作業メモを積む。清掃ボードの V列(やり直した箇所) と X列(特別清掃箇所)。
- *  ★金額には一切効かせない。請求のときに「何をやったか」がわかるよう
- *    ログに出すためだけのもの。
- */
-function collectWorkMemo_(p, date, kind, rows) {
-  if (!CONFIG.PAYROLL.MEMO.ENABLED) return;
-  rows.forEach(r => {
-    const redo = String(r.cleanRedo || '').trim();
-    const spot = String(r.spotWork  || '').trim();
-    if (!redo && !spot) return;
-    p.memo.push({
-      date: date, room: r.room, kind: kind,
-      rate: parseAchieveRate_(r.cleanRate),
-      redo: redo, spot: spot,
-    });
-  });
 }
 
 function pctP_(rate) {
@@ -1050,6 +1031,7 @@ function logStaffPay_(res) {
         if (d.gross !== d.net) line += `  ${yenP_(d.gross)} → ${yenP_(d.net)}`;
         else                   line += `  ${yenP_(d.net)}`;
         if (d.redoN) line += `  やり直し${d.redoN}箇所: ${d.redo}`;
+        if (d.spotPlain) line += ` ※特別清掃: ${d.spotPlain}`;
         if (d.note)  line += `  ${d.note}`;
         L.push(line);
         if (d.spot) L.push(`           特別清掃箇所: ${d.spot}`);
@@ -1066,7 +1048,9 @@ function logStaffPay_(res) {
     if (p.deep.days.length) {
       L.push(`  客室徹底清掃      ${yenP_(p.deep.amount)}`);
       p.deep.days.forEach(d => {
-        L.push(`       ${d.date}  ${d.pt}pt → ${yenP_(d.amount)} ${d.note}  [${d.tasks.join(' / ')}]`);
+        L.push(`       ${d.date}  ${d.pt}pt → ${yenP_(d.amount)} ${d.note}`
+          + (d.spotPlain ? ` ※特別清掃: ${d.spotPlain}` : '')
+          + `  [${d.tasks.join(' / ')}]`);
         if (d.spot) L.push(`           特別清掃箇所: ${d.spot}`);
       });
     }
@@ -1086,17 +1070,6 @@ function logStaffPay_(res) {
         const detail = [d.boardMeals, d.optMeals, d.orderMeals]
           .filter(x => x).join('  ///  ');
         if (detail) L.push(`           食事: ${detail}`);
-      });
-    }
-
-    if (P.MEMO.ENABLED && P.MEMO.SUMMARY && p.memo.length) {
-      L.push('  ── 作業メモ (金額には効いていません) ──');
-      p.memo.forEach(m => {
-        const bits = [];
-        if (m.spot) bits.push(`特別清掃: ${m.spot}`);
-        if (m.redo) bits.push(`やり直し: ${m.redo}`);
-        L.push(`       ${m.date} ${m.room} [${m.kind}] 達成率 ${pctP_(m.rate)}`
-          + `  ${bits.join('  /  ')}`);
       });
     }
 

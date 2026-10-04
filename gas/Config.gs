@@ -799,8 +799,6 @@ const CONFIG = {
     //    X 特別清掃箇所       … やった内容のメモ。金額には無関係
     MEMO: {
       ENABLED: true,
-      //  担当者ごとの一覧を末尾に出すか
-      SUMMARY: true,
     },
 
     // 特別報酬 (人数が多い日の加算)
