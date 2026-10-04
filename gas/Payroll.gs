@@ -1135,7 +1135,8 @@ function logStaffPay_(res) {
   //  給料が発生しない人も作業はしているので、日数だけ残す。
   const ex = res.excluded || {};
   Object.keys(ex).forEach(nm => {
-    L.push(`  オーナー対応 (給与なし): 「${nm}」 清掃${ex[nm].cleanDays}日 / 接客${ex[nm].nightDays}日`);
+    L.push(`  オーナー対応 (給与なし): 「${nm}」 清掃${ex[nm].cleanDays}日 / 接客${ex[nm].nightDays}日`
+      + '  ← 清掃ボード A列(清掃) / D列(接客) に名前が入っている日数');
   });
 
   Logger.log(L.join('\n'));
