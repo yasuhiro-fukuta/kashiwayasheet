@@ -71,7 +71,10 @@ function readBoardForPayroll_() {
   if (last < 2) return [];
 
   const C = CONFIG.COL_CLEAN;
-  const rows = sh.getRange(2, 1, last - 1, C.UPDATED_AT).getDisplayValues();
+  //  U列(清掃達成率) と V列(清掃やり直した箇所) まで読む。
+  //  まだ列が無いシートでも落ちないように実際の列数で止める。
+  const width = Math.min(Math.max(sh.getLastColumn(), C.UPDATED_AT), C.NIGHT_HALF);
+  const rows = sh.getRange(2, 1, last - 1, width).getDisplayValues();
 
   return rows.map(r => ({
     date:      String(r[C.DATE - 1]         || '').trim(),
@@ -84,6 +87,9 @@ function readBoardForPayroll_() {
     state:     String(r[C.STATE - 1]        || '').trim(),
     guestName: String(r[C.GUEST_NAME - 1]   || '').trim(),
     meal:      String(r[C.MEAL - 1]         || '').trim(),
+    cleanRate: String(r[C.CLEAN_RATE - 1]   || '').trim(),   // U 手動
+    cleanRedo: String(r[C.CLEAN_REDO - 1]   || '').trim(),   // V 手動
+    nightHalf: String(r[C.NIGHT_HALF - 1]   || '').trim(),   // W 手動
   })).filter(r => r.date);
 }
 
@@ -125,10 +131,10 @@ function computeStaffPay(board, deep, month) {
     if (!people[name]) {
       people[name] = {
         name:     name,
-        setup:    { count: 0, rooms: 0, days: [], amount: 0 },
+        setup:    { count: 0, rooms: 0, days: [], amount: 0, gross: 0, deduction: 0 },
         bonus:    { headcount: 0, excess: 0, lines: [] },
         deep:     { days: [], amount: 0 },
-        checkin:  { a: 0, b: 0, days: [], amount: 0 },
+        checkin:  { a: 0, b: 0, days: [], amount: 0, halfDays: 0, halfCut: 0 },
         total:    0,
       };
     }
@@ -137,35 +143,122 @@ function computeStaffPay(board, deep, month) {
 
   const inMonth = r => String(r.date).slice(0, 7) === month;
 
+  // ── 「特別」の日の判定 ──────────────────────────────────
+  //  B列(種類)が「特別」の行がその日に何部屋あるかで扱いが変わる。
+  //    全部屋が特別 … その日まるごと徹底清掃1件 (15pt = 6,000円)
+  //    一部だけ特別 … 布団2個の入替清掃として通常のセットアップに回す
+  const specialDays = detectSpecialDays_(board, month);
+
   // ── 客室セットアップ業務 ────────────────────────────────
-  const setupSeen = {};   // 担当者+単位 の重複排除
+  //  まず「1件」の単位をまとめてから金額を出す。
+  //  U列(達成率)・V列(やり直した箇所)は行ごとに入るので、
+  //  1件に 1F/2F の2行がぶら下がる場合はここでまとめる必要がある。
+  const units = {};
+  const unitOrder = [];
   board.filter(inMonth).forEach(r => {
     if (!r.cleaner || isIgnoredStaffName_(r.cleaner)) return;
     if (P.SETUP.REQUIRE_KIND && !r.cleanKind) return;
-    if (P.SETUP.EXCLUDE_SPECIAL && isSpecialCleanKind_(r.cleanKind)) return;
 
-    const p = person(r.cleaner);
-    p.setup.rooms++;
+    //  両階が特別の日は下の「特別日」処理に回す。ここでは数えない。
+    if (specialDays[r.date] && specialDays[r.date].allSpecial) return;
 
-    const unitKey = (P.SETUP.COUNT_UNIT === 'room')
+    const key = (P.SETUP.COUNT_UNIT === 'room')
       ? r.cleaner + '|' + r.date + '|' + r.room
       : r.cleaner + '|' + r.date;
-    if (!setupSeen[unitKey]) {
-      setupSeen[unitKey] = true;
-      p.setup.count++;
-      p.setup.days.push(r.date + (P.SETUP.COUNT_UNIT === 'room' ? ' ' + r.room : ''));
+    if (!units[key]) {
+      units[key] = { cleaner: r.cleaner, date: r.date, rows: [] };
+      unitOrder.push(key);
     }
-
-    // 特別報酬。人数は部屋ごとに違うので部屋単位で積む。
-    if (P.BONUS.PER_ROOM || setupSeen[unitKey + '|bonus'] !== true) {
-      setupSeen[unitKey + '|bonus'] = true;
-      addSetupBonus_(p, r, byKey, warnings);
+    //  片階だけ特別の行は「布団2個の入替清掃」として扱う。
+    //  人数をみなし値に差し替えることで特別報酬が自動的に0になる。
+    if (isSpecialCleanKind_(r.cleanKind)) {
+      const futons = String(CONFIG.PAYROLL.SPECIAL_DAY.ONE_FLOOR_FUTONS);
+      units[key].rows.push(Object.assign({}, r, {
+        guests: futons, asTwoFutons: true,
+      }));
+    } else {
+      units[key].rows.push(r);
     }
   });
 
-  Object.keys(people).forEach(n => {
-    const p = people[n];
-    p.setup.amount = p.setup.count * P.SETUP.UNIT_PRICE;
+  unitOrder.forEach(key => {
+    const u = units[key];
+    const p = person(u.cleaner);
+    const cut = setupShortfall_(u.rows);
+    const gross = P.SETUP.UNIT_PRICE;
+    const net = Math.max(0, gross - cut.deduction);
+
+    p.setup.count++;
+    p.setup.rooms += u.rows.length;
+    p.setup.gross += gross;
+    p.setup.deduction += (gross - net);
+    p.setup.amount += net;
+    p.setup.days.push({
+      label: u.date + (P.SETUP.COUNT_UNIT === 'room' ? ' ' + u.rows[0].room : ''),
+      rooms: u.rows.map(r => r.room).join('+'),
+      rate:  cut.rate,
+      redo:  cut.redoText,
+      redoN: cut.redoN,
+      gross: gross,
+      net:   net,
+      note:  cut.note,
+    });
+    if (cut.note) {
+      warnings.push(`清掃減額: ${u.date} ${u.cleaner} — ${cut.note}`);
+    }
+
+    // 特別報酬。人数は部屋ごとに違うので既定では部屋単位で積む。
+    //  「布団2個の入替清掃として扱う」行は特別報酬を付けない。
+    const bonusRows = (P.BONUS.PER_ROOM ? u.rows : u.rows.slice(0, 1))
+      .filter(r => !r.asTwoFutons);
+    bonusRows.forEach(r => addSetupBonus_(p, r, byKey, warnings));
+  });
+
+  // ── 両階が特別の日 → 徹底清掃1件 (15pt = 6,000円) ─────────
+  //  特シートに同じ (対応者, 日) の pt 行があるときはそちらを正とし、
+  //  ここでは付けない (同じ作業を2回払わないため)。
+  const deepKeysFromSheet = {};
+  deep.forEach(r => {
+    const d = normalizeDoneDate_(r.doneDate, month);
+    if (d && r.assignee) deepKeysFromSheet[r.assignee + '|' + d] = true;
+  });
+
+  Object.keys(specialDays).forEach(date => {
+    const sd = specialDays[date];
+    if (!sd.allSpecial) return;
+
+    const cleaners = sd.cleaners;
+    if (!cleaners.length) {
+      warnings.push(`${date} は全部屋が特別だが清掃担当(A列)が入っていない`);
+      return;
+    }
+
+    const full = deepCleanAmount_(CONFIG.PAYROLL.SPECIAL_DAY.BOTH_FLOORS_PT);
+    const cut  = setupShortfall_(sd.rows);
+    const gross = Math.round(full.amount / cleaners.length);
+    const net   = Math.max(0, gross - Math.round(cut.deduction * gross / P.SETUP.UNIT_PRICE));
+
+    if (cleaners.length > 1) {
+      warnings.push(`${date} は全部屋が特別だが清掃担当が複数 (${cleaners.join(' / ')}) —`
+        + ` ${yenP_(full.amount)} を人数で等分した`);
+    }
+
+    cleaners.forEach(name => {
+      if (CONFIG.PAYROLL.SPECIAL_DAY.PREFER_DEEP_SHEET
+          && deepKeysFromSheet[name + '|' + date]) {
+        warnings.push(`${date} ${name}: 全部屋が特別だが特シートにも同日の pt 行がある`
+          + ` — 特シート側で計算し、清掃ボード由来の ${yenP_(gross)} は付けていない`);
+        return;
+      }
+      const p = person(name);
+      p.deep.days.push({
+        date: date, pt: CONFIG.PAYROLL.SPECIAL_DAY.BOTH_FLOORS_PT,
+        amount: net, note: cut.note,
+        tasks: [`清掃ボード: 全部屋が特別 (${sd.rows.map(r => r.room).join('+')})`
+          + (gross !== net ? ` / 達成率 ${pctP_(cut.rate)} で ${yenP_(gross)}→${yenP_(net)}` : '')],
+      });
+      p.deep.amount += net;
+    });
   });
 
   // ── 客室徹底清掃業務 (特シート) ──────────────────────────
@@ -216,17 +309,26 @@ function computeStaffPay(board, deep, month) {
     }
     nightByDay[k].rooms.push(r.room);
     if (hasDinner_(r.meal)) nightByDay[k].dinner = true;
+    if (isHalfNight_(r.nightHalf)) nightByDay[k].half = true;
   });
 
   Object.keys(nightByDay).forEach(k => {
     const u = nightByDay[k];
     const p = person(u.server);
-    const amount = u.dinner ? P.CHECKIN.PRICE_B : P.CHECKIN.PRICE_A;
+    //  仕出し(夕食)がどの部屋にも無ければ A (チェックイン対応のみ)。
+    const full = u.dinner ? P.CHECKIN.PRICE_B : P.CHECKIN.PRICE_A;
+    const half = P.CHECKIN.HALF_ENABLED && u.half;
+    const amount = half ? Math.round(full * P.CHECKIN.HALF_RATE) : full;
     if (u.dinner) p.checkin.b++; else p.checkin.a++;
+    if (half) {
+      p.checkin.halfDays++;
+      p.checkin.halfCut += (full - amount);
+    }
     p.checkin.amount += amount;
     p.checkin.days.push({
       date: u.date, rooms: u.rooms.join('+'),
-      type: u.dinner ? 'B(CI+仕出し)' : 'A(CIのみ)', amount: amount,
+      type: u.dinner ? 'B(CI+仕出し)' : 'A(CIのみ)',
+      amount: amount, full: full, half: half,
     });
   });
 
@@ -364,6 +466,139 @@ function addSetupBonus_(p, r, byKey, warnings) {
   }
 }
 
+/**
+ * 「特別」の日を洗い出す。
+ *  その日に清掃の行が立っている部屋のうち、何部屋が「特別」かを見る。
+ *  全部が特別なら allSpecial = true (= その日まるごと徹底清掃)。
+ *
+ *  ★判定の母数は CONFIG.CLEANING.ROOMS ではなく
+ *    「その日に清掃担当が入っている行」にする。
+ *    片方の階が空室で清掃不要な日に、1部屋だけ特別が立っていても
+ *    「全部屋が特別」と誤判定しないため。
+ *    ただし母数が1部屋しかない日は「両階とも特別」ではないので
+ *    allSpecial にしない (= 布団2個扱いに回る)。
+ */
+function detectSpecialDays_(board, month) {
+  const byDate = {};
+  board.forEach(r => {
+    if (String(r.date).slice(0, 7) !== month) return;
+    if (!r.cleaner || isIgnoredStaffName_(r.cleaner)) return;
+    if (CONFIG.PAYROLL.SETUP.REQUIRE_KIND && !r.cleanKind) return;
+    if (!byDate[r.date]) byDate[r.date] = { rooms: [], special: [] };
+    byDate[r.date].rooms.push(r);
+    if (isSpecialCleanKind_(r.cleanKind)) byDate[r.date].special.push(r);
+  });
+
+  const out = {};
+  Object.keys(byDate).forEach(date => {
+    const d = byDate[date];
+    const allSpecial = d.special.length >= 2 && d.special.length === d.rooms.length;
+    const cleaners = [];
+    d.special.forEach(r => {
+      if (cleaners.indexOf(r.cleaner) < 0) cleaners.push(r.cleaner);
+    });
+    out[date] = {
+      allSpecial: allSpecial,
+      rows:       d.special,
+      cleaners:   cleaners,
+      roomCount:  d.rooms.length,
+    };
+  });
+  return out;
+}
+
+/**
+ * U列「清掃達成率」を 0〜1 の比率にする。
+ *  '90%' / '0.9' / '90' / '９０％' のどれでも読む。
+ *  空欄・読めない値は null (= 記入なし。減額しない)。
+ *  1 を超える値は 1 に丸める (達成率で増額はしない)。
+ */
+function parseAchieveRate_(v) {
+  const raw = toHalfWidth(String(v || '')).trim().replace(/％/g, '%');
+  if (!raw) return null;
+  const hasPct = raw.indexOf('%') >= 0;
+  const n = Number(raw.replace(/[^0-9.]/g, ''));
+  if (!isFinite(n) || raw.replace(/[^0-9.]/g, '') === '') return null;
+  //  '%' が付いていれば必ずパーセント。
+  //  付いていなければ 1以下は比率 (0.9)、1超はパーセント (90) と読む。
+  //  ちょうど 1 はどちらの読みでも 100% になる。
+  const ratio = (hasPct || n > 1) ? n / 100 : n;
+  if (ratio < 0) return 0;
+  return Math.min(1, ratio);
+}
+
+/**
+ * V列「清掃やり直した箇所」の箇所数を数える。
+ *  「、」「,」「/」「・」「;」改行 を区切りとして扱う。
+ *  '-' や 'なし' は 0 件。
+ */
+function countRedoItems_(v) {
+  const raw = String(v || '').trim();
+  if (!raw) return 0;
+  if (/^(?:-|ー|―|なし|無し|none|no)$/i.test(raw)) return 0;
+  return raw.split(/[、,\/・;；\n\r]+/).map(x => x.trim()).filter(x => x).length;
+}
+
+/**
+ * 1件(= まとめた行の集まり)の清掃減額を出す。
+ *  達成率 … CONFIG.PAYROLL.SHORTFALL.AGGREGATE で平均か最小かを選ぶ。
+ *           記入のある行だけを見る (未記入の行で薄めない)。
+ *  やり直した箇所 … REDO_DEDUCTION が 0 なら金額には効かせず内訳に出すだけ。
+ */
+function setupShortfall_(rows) {
+  const S = CONFIG.PAYROLL.SHORTFALL;
+  const price = CONFIG.PAYROLL.SETUP.UNIT_PRICE;
+
+  const rates = rows.map(r => parseAchieveRate_(r.cleanRate)).filter(x => x !== null);
+  let rate = null;
+  if (rates.length) {
+    rate = (S.AGGREGATE === 'min')
+      ? Math.min.apply(null, rates)
+      : rates.reduce((a, b) => a + b, 0) / rates.length;
+  }
+
+  const redoTexts = rows.map(r => String(r.cleanRedo || '').trim()).filter(x => x);
+  const redoN = rows.reduce((n, r) => n + countRedoItems_(r.cleanRedo), 0);
+
+  let deduction = 0;
+  let note = '';
+
+  if (rate !== null && rate < 1 && S.RATE_MODE !== 'none') {
+    const kept = (S.RATE_MODE === 'contract') ? rate * S.CONTRACT_RATIO : rate;
+    deduction += price - Math.round(price * kept);
+  }
+
+  if (redoN > 0 && S.REDO_DEDUCTION > 0) {
+    deduction += redoN * S.REDO_DEDUCTION;
+  }
+
+  if (redoN > 0 && rate === null) note = S.REDO_ONLY_NOTE;
+
+  return {
+    rate:      rate,
+    redoText:  redoTexts.join(' / '),
+    redoN:     redoN,
+    deduction: Math.min(price, Math.round(deduction)),
+    note:      note,
+  };
+}
+
+/**
+ * W列「接客半日？」に印が付いているか。
+ *  空欄 / FALSE / '-' / 'なし' は印なし。
+ */
+function isHalfNight_(v) {
+  const raw = toHalfWidth(String(v || '')).trim();
+  if (!raw) return false;
+  if (/^(?:FALSE|no|n|x|-|ー|―|なし|無し)$/i.test(raw)) return false;
+  return CONFIG.PAYROLL.CHECKIN.HALF_TRUE_PATTERNS.some(re => re.test(raw));
+}
+
+function pctP_(rate) {
+  if (rate === null || rate === undefined) return '未記入';
+  return Math.round(rate * 1000) / 10 + '%';
+}
+
 function bonusAmount_(p) {
   return (CONFIG.PAYROLL.BONUS.BASE === 'excess') ? p.bonus.excess : p.bonus.headcount;
 }
@@ -411,9 +646,20 @@ function logStaffPay_(res) {
     L.push(`── ${p.name} ${p.contractKnown ? '' : '(CONFIG.PAYROLL.CONTRACTS に未登録 → 全項目を計算)'}`);
 
     if (p.setup.count) {
-      L.push(`  客室セットアップ  ${p.setup.count}件 × ${yenP_(P.SETUP.UNIT_PRICE)} = ${yenP_(p.setup.amount)}`
+      L.push(`  客室セットアップ  ${p.setup.count}件 × ${yenP_(P.SETUP.UNIT_PRICE)} = ${yenP_(p.setup.gross)}`
         + `   (対象行 ${p.setup.rooms}室 / 数え方=${P.SETUP.COUNT_UNIT})`);
-      L.push(`     対象日: ${p.setup.days.join(', ')}`);
+      if (p.setup.deduction) {
+        L.push(`     清掃減額         -${yenP_(p.setup.deduction)}  (達成率の効かせ方=${P.SHORTFALL.RATE_MODE})`);
+      }
+      L.push(`     差引後           ${yenP_(p.setup.amount)}`);
+      p.setup.days.forEach(d => {
+        let line = `       ${d.label}  ${d.rooms}  達成率 ${pctP_(d.rate)}`;
+        if (d.gross !== d.net) line += `  ${yenP_(d.gross)} → ${yenP_(d.net)}`;
+        else                   line += `  ${yenP_(d.net)}`;
+        if (d.redoN) line += `  やり直し${d.redoN}箇所: ${d.redo}`;
+        if (d.note)  line += `  ${d.note}`;
+        L.push(line);
+      });
     }
 
     if (p.bonus.headcount || p.bonus.excess) {
@@ -433,9 +679,14 @@ function logStaffPay_(res) {
     if (p.checkin.days.length) {
       L.push(`  チェックイン対応  A ${p.checkin.a}件 × ${yenP_(P.CHECKIN.PRICE_A)}`
         + ` / B ${p.checkin.b}件 × ${yenP_(P.CHECKIN.PRICE_B)} = ${yenP_(p.checkin.amount)}`);
+      if (p.checkin.halfCut) {
+        L.push(`     うち半日(W列) ${p.checkin.halfDays}件 で -${yenP_(p.checkin.halfCut)}`
+          + ` (掛け率 ${P.CHECKIN.HALF_RATE})`);
+      }
       L.push(`     ※${P.CHECKIN.TAX_NOTE}`);
       p.checkin.days.forEach(d => {
-        L.push(`       ${d.date}  ${d.rooms}  ${d.type}  ${yenP_(d.amount)}`);
+        L.push(`       ${d.date}  ${d.rooms}  ${d.type}  ${yenP_(d.amount)}`
+          + (d.half ? `  半日 (${yenP_(d.full)} → ${yenP_(d.amount)})` : ''));
       });
     }
 
@@ -460,9 +711,19 @@ function logStaffPay_(res) {
   L.push('');
   L.push('── 計算に使った読み (変えるときは Config.gs の PAYROLL) ──');
   L.push(`  セットアップ1件の単位 : ${P.SETUP.COUNT_UNIT}  (day = 同じ日に1F+2F掃除しても1件)`);
-  L.push(`  徹底清掃の行を除外    : ${P.SETUP.EXCLUDE_SPECIAL}`);
+  L.push(`  両階とも「特別」の日   : ${P.SPECIAL_DAY.BOTH_FLOORS_PT}pt 相当`
+    + ` = ${yenP_(deepCleanAmount_(P.SPECIAL_DAY.BOTH_FLOORS_PT).amount)} (セットアップは付けない)`);
+  L.push(`  片階だけ「特別」の日   : 布団${P.SPECIAL_DAY.ONE_FLOOR_FUTONS}個の入替清掃として扱う`
+    + ` (= ${yenP_(P.SETUP.UNIT_PRICE)} / 特別報酬なし)`);
   L.push(`  特別報酬「その値」     : ${P.BONUS.BASE}`);
   L.push(`  特別報酬の単位         : ${P.BONUS.PER_ROOM ? '部屋ごとに積む' : '日ごとに1回'}`);
+  L.push(`  清掃達成率の効かせ方   : ${P.SHORTFALL.RATE_MODE}`
+    + (P.SHORTFALL.RATE_MODE === 'contract' ? ` (×${P.SHORTFALL.CONTRACT_RATIO})` : ''));
+  L.push(`  複数行のまとめ方       : ${P.SHORTFALL.AGGREGATE}`);
+  L.push(`  やり直し1箇所の減額   : ${yenP_(P.SHORTFALL.REDO_DEDUCTION)}`
+    + (P.SHORTFALL.REDO_DEDUCTION ? '' : ' (0 = 金額には効かせず内訳に出すだけ)'));
+  L.push(`  接客半日(W列)の掛け率 : `
+    + (P.CHECKIN.HALF_ENABLED ? `${P.CHECKIN.HALF_RATE} ★契約書に根拠が無い列。要確認` : '見ない'));
 
   Logger.log(L.join('\n'));
   return L.join('\n');
