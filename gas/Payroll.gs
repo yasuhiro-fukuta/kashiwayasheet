@@ -1976,27 +1976,54 @@ function diagnoseOrderSheetMissing(ym) {
     logPortionDiff_(L, m);
   });
 
+  // ── ⑤ 予約が消えた分 ──────────────────────────────────
+  //  ★同じ (日付, 部屋) に生きている行がある論理削除は「再提出による
+  //    差し替え」なので出さない。
+  //  ★★さらに、過ぎた日は出し方を分ける。
+  //    markCancelledByDisappearance() は、予約が LatestReservations から
+  //    消えると食事予約表に「削除」を立てる。過去の宿泊は iCal から
+  //    落ちるので、終わった予約はいずれ必ず削除扱いになる。
+  //    つまり過去日の「削除」はキャンセルではなく、ただ終わっただけ。
+  //    取消連絡が要るのは「これから提供する日」だけ。
+  const today = fmtDate(todayJst());
+  const deadRows = all.filter(o => o.deleted && o.meal && !liveKey[`${o.checkin}|${o.room}`]);
+  const replaced = all.filter(o => o.deleted && o.meal &&  liveKey[`${o.checkin}|${o.room}`]);
+
+  //  同じ内容が二重に残っていることがあるのでまとめる
+  const deadSeen = {};
+  const dead = [];
+  deadRows.forEach(o => {
+    const k = [o.checkin, o.room, normName_(o.guestName), o.meal].join('|');
+    if (deadSeen[k]) return;
+    deadSeen[k] = true;
+    dead.push(o);
+  });
+  const cancelled = dead.filter(o => o.checkin >= today);   // これから
+  const finished  = dead.filter(o => o.checkin <  today);   // 済んだ
+
+  //  ⑤に出た (日付,部屋) は④から除く。同じ話を2回出さない。
+  const deadKey = {};
+  dead.forEach(o => { deadKey[`${o.checkin}|${o.room}`] = true; });
+
   // ── ④ 確認票にあるが予約表に無い ──────────────────────
   L.push('');
   L.push('── ④ 注文確認票にあるのに食事予約表に無い ────────────');
   L.push('   WhatsApp等で直接受けた注文。CleaningOverride に書けば');
   L.push('   清掃ボードにも出て、給料の仕出し判定にも乗ります。');
-  if (!extra.length) L.push('   なし');
-  extra.forEach(x => {
+  const extraLive = extra.filter(x => !deadKey[x.key]);
+  if (!extraLive.length) L.push('   なし');
+  extraLive.forEach(x => {
     const parts = x.key.split('|');
     const nm = x.rows.map(r => r.name).filter(v => v)[0] || '(氏名なし)';
     L.push(`   ・${parts[0]} ${parts[1]} ${nm}: `
       + x.rows.map(r => `${r.item} x${r.qty}`).join(', '));
   });
+  if (extra.length !== extraLive.length) {
+    L.push(`   (⑤に出ている ${extra.length - extraLive.length}件は除いています)`);
+  }
 
-  // ── ⑤ 本当にキャンセルされたもの ──────────────────────
-  //  ★同じ (日付, 部屋) に生きている行がある論理削除は「再提出による
-  //    差し替え」なので出さない。生きている行が無いものだけが
-  //    本当に消えた予約。
-  const cancelled = all.filter(o => o.deleted && o.meal && !liveKey[`${o.checkin}|${o.room}`]);
-  const replaced  = all.filter(o => o.deleted && o.meal &&  liveKey[`${o.checkin}|${o.room}`]);
   L.push('');
-  L.push('── ⑤ 予約が消えたのに食事注文が残っている ────────────');
+  L.push('── ⑤ 予約が消えたのに食事注文が残っている (これからの日) ──');
   L.push('   確認票に書いてあれば、ほなみやへ取消の連絡が要ります。');
   if (!cancelled.length) L.push('   なし');
   cancelled.forEach(o => {
@@ -2004,12 +2031,20 @@ function diagnoseOrderSheetMissing(ym) {
     L.push(`   ${sheetByKey[k] ? '⚠ 確認票に残っている' : '・確認票には無い'}`
       + `  ${o.checkin} ${o.room} ${o.guestName}: ${o.meal}`);
   });
-  L.push(`   (再提出で差し替わった古い行 ${replaced.length}件は除いています)`);
+
+  L.push('');
+  L.push('── (参考) 済んだ日の削除 ─────────────────────────');
+  L.push('   過去の宿泊は iCal から落ちるため、終わった予約は必ず');
+  L.push('   「削除」になります。キャンセルではありません。対応不要です。');
+  L.push(`   ${finished.length}件`);
+  finished.forEach(o => L.push(`   ・${o.checkin} ${o.room} ${o.guestName}`));
+  L.push(`   (再提出で差し替わった古い行 ${replaced.length}件は別途除いています)`);
 
   L.push('');
   L.push(`集計: 転記漏れ ${missing.length} / 階違い ${floorMismatch.length}`
     + ` / 数量違い ${qtyMismatch.length} / 一致 ${matched.length}`
-    + ` / 確認票のみ ${extra.length} / 要取消 ${cancelled.length}`);
+    + ` / 確認票のみ ${extraLive.length} / 要取消 ${cancelled.length}`
+    + ` / 済んだ削除 ${finished.length}`);
 
   Logger.log(L.join('\n'));
   return { month: month, missing: missing, floorMismatch: floorMismatch,
