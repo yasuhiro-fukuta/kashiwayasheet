@@ -356,6 +356,7 @@ function onOpen() {
     .addItem('🩺 仕出し判定の診断 (前月)',            'diagnoseCheckinPay')
     .addItem('🩺 特別報酬(4人超)の診断 (前月)',       'diagnoseSetupBonus')
     .addItem('🍱 食事予約表と清掃表の突合 (今日)',     'diagnoseMealMatch')
+    .addItem('📋 注文確認票への転記漏れ (当月)',       'diagnoseOrderSheetMissing')
     .addSeparator()
     .addItem('🐢 重さを調べる (スマホで開けない時)',    'diagnoseSheetWeight')
     .addItem('🧹 未使用の行・列を削って軽くする',      'trimSheetGrids')
