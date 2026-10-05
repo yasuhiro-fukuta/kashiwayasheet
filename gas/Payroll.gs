@@ -177,17 +177,23 @@ function orderSheetMonthOf_(name) {
   return `${year}-${('0' + month).slice(-2)}`;
 }
 
-/** 対象月のタブを探す。見つからなければ null。 */
-function findOrderSheetForMonth_(ss, month) {
+/**
+ * 対象月のタブを「全部」探す。
+ *  ★1つだけ返すと誤読する。注文確認票には
+ *      「R8　１０月」… 本体のカレンダー表
+ *      「R8 10月」   … メモ書きの小さなタブ
+ *    のように、同じ月に解決するタブが複数ある。先に見つかった方を
+ *    返すとタブの並び順しだいで中身の無い方を読んでしまう。
+ *    全部読んで足し合わせる。表の無いタブは何も足さないので無害。
+ */
+function findOrderSheetsForMonth_(ss, month) {
   const O = CONFIG.PAYROLL.ORDER_SHEET;
   const fixed = O.SHEET_OVERRIDES[month];
-  if (fixed) return ss.getSheetByName(fixed);
-
-  const sheets = ss.getSheets();
-  for (let i = 0; i < sheets.length; i++) {
-    if (orderSheetMonthOf_(sheets[i].getName()) === month) return sheets[i];
+  if (fixed) {
+    const sh = ss.getSheetByName(fixed);
+    return sh ? [sh] : [];
   }
-  return null;
+  return ss.getSheets().filter(sh => orderSheetMonthOf_(sh.getName()) === month);
 }
 
 /**
@@ -395,10 +401,13 @@ function readOrderSheetDinners_(month) {
   if (id) {
     try {
       const ss = SpreadsheetApp.openById(id);
-      const sh = findOrderSheetForMonth_(ss, month);
-      if (sh) absorb(readOneOrderSheet_(sh, month, '共有ファイル'));
-      else reasons.push(`共有ファイルに ${month} のタブが見つからない`
-        + ` (タブ名: ${ss.getSheets().map(x => x.getName()).join(' / ')})`);
+      const sheets = findOrderSheetsForMonth_(ss, month);
+      if (sheets.length) {
+        sheets.forEach(sh => absorb(readOneOrderSheet_(sh, month, '共有ファイル')));
+      } else {
+        reasons.push(`共有ファイルに ${month} のタブが見つからない`
+          + ` (タブ名: ${ss.getSheets().map(x => x.getName()).join(' / ')})`);
+      }
     } catch (e) {
       reasons.push('共有ファイルを開けない。Googleスプレッドシート形式に'
         + `変換されているか確認 (${e.message || e})`);
