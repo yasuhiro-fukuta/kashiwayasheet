@@ -46,12 +46,17 @@ function syncOptionBookings(now) {
   const last = sh.getLastRow();
   if (last < 2) return Object.assign({}, base, { ok: true, skipped: false, reason: '' });
 
-  const calId = PropertiesService.getScriptProperties().getProperty(B.PROP_CALENDAR_ID);
+  //  Script Property に登録があればそれを使う。無ければ既定
+  //  (メインカレンダー) にする。専用カレンダーに分けたくなったら
+  //  setOptionCalendarId() で登録すれば、そちらが常に優先される。
+  const setId = PropertiesService.getScriptProperties().getProperty(B.PROP_CALENDAR_ID);
+  const calId = setId || B.DEFAULT_CALENDAR_ID || '';
   if (!calId) {
     return Object.assign({}, base, {
       reason: "カレンダーIDが未設定。setOptionCalendarId('…') を1回実行してください",
     });
   }
+  const usingDefault = !setId;
 
   let cal;
   try {
@@ -129,7 +134,8 @@ function syncOptionBookings(now) {
   });
 
   return { ok: true, skipped: false, reason: '', created: created, updated: updated,
-           deleted: deleted, errors: errors };
+           deleted: deleted, errors: errors,
+           calendar: cal.getName(), usingDefault: usingDefault };
 }
 
 // ── 1行 → 予定の中身 (シートに触らないのでテストできる) ──────────
@@ -282,7 +288,12 @@ function ensureOptionBookingSheet() {
 
 function formatOptionBookingResult_(r) {
   if (!r.ok) return `オプション予約の反映をスキップ: ${r.reason}`;
-  let s = `オプション予約: 登録${r.created} / 更新${r.updated} / 削除${r.deleted}`;
+  let s = `オプション予約: 登録${r.created} / 更新${r.updated} / 削除${r.deleted}`
+    + (r.calendar ? `  → カレンダー「${r.calendar}」` : '');
+  if (r.usingDefault) {
+    s += "\n  ※メインカレンダーに入れています。専用カレンダーに分けるなら"
+      + " setOptionCalendarId('カレンダーID') を1回実行してください。";
+  }
   if (r.errors && r.errors.length) {
     s += `\n  ⚠ 取り込めなかった行:\n   ・` + r.errors.join('\n   ・');
   }
@@ -296,8 +307,11 @@ function dumpOptionBookings() {
   const L = [];
   L.push('════════ オプション予約の確認 (書き込みなし) ════════');
 
-  const calId = PropertiesService.getScriptProperties().getProperty(B.PROP_CALENDAR_ID);
-  L.push(`カレンダーID: ${calId || '★未設定 — setOptionCalendarId(\'…\') を実行してください'}`);
+  const setId = PropertiesService.getScriptProperties().getProperty(B.PROP_CALENDAR_ID);
+  L.push(`カレンダー: ${setId || (B.DEFAULT_CALENDAR_ID + ' (既定・メインカレンダー)')}`);
+  if (!setId) {
+    L.push("  ※専用カレンダーに分けるなら setOptionCalendarId('カレンダーID') を1回実行。");
+  }
 
   if (!sh) {
     L.push(`★「${B.SHEET}」シートがありません。ensureOptionBookingSheet() で作れます。`);
