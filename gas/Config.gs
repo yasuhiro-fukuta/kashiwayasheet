@@ -635,6 +635,7 @@ const CONFIG = {
     { test: /^\s*Cold\s+Shabu/i,                         label: 'Cold Shabu-Shabu',        kind: 'dinner',    order: 3 },
     { test: /^\s*Chicken\s+Hot\s+Pot/i,                  label: 'Chicken Hot Pot',         kind: 'dinner',    order: 1 },
     { test: /^\s*Vegan\s+Hot\s+Pot|^\s*Chirashi/i,       label: 'Vegan Hot Pot & Chirashi',kind: 'dinner',    order: 5 },
+    { test: /^\s*(?:Japanese\s+)?Wagyu\s+(?:Beef\s+)?BBQ/i, label: 'Wagyu BBQ',             kind: 'dinner',    order: 7 },
     { test: /^\s*(?:Japanese\s+)?(?:Wagyu\s+)?Sukiyaki/i,label: 'Wagyu Sukiyaki',          kind: 'dinner',    order: 6 },
     { test: /^\s*Shabu[-\s]?Shabu/i,                     label: 'Shabu-Shabu',             kind: 'dinner',    order: 2 },
     { test: /^\s*Ochazuke/i,                             label: 'Ochazuke Breakfast',      kind: 'breakfast', order: 9 },
@@ -1012,6 +1013,45 @@ const CONFIG = {
 
       //  日付セルから日を拾う ('１日' '10日' '1' どれでも)
       DAY_PATTERN: /(\d{1,2})/,
+
+      //  ── 単位の違い ────────────────────────────────────
+      //   食事予約表(LatestOptions) … 人数表記 (2人前 / 4人前)
+      //   注文確認票              … セット表記
+      //     夕食 1セット = 2名分
+      //     朝食 1セット = 1名分
+      //   突合するときは必ず人数に揃えてから比べること。
+      PERSONS_PER_SET: { dinner: 2, breakfast: 1, other: 1 },
+
+      //  注文確認票の日本語商品名 → 共通ラベル。
+      //  ★先頭一致。並び順が効くので、長いもの/限定的なものを上に置く。
+      //    「ビーグル冷」を「ビーグル鍋」より先に書くこと。
+      ITEM_ALIASES: [
+        { test: /^朝食/,                    label: 'Ochazuke Breakfast',       kind: 'breakfast' },
+        { test: /^鶏鍋/,                    label: 'Chicken Hot Pot',          kind: 'dinner' },
+        { test: /^冷しゃぶ/,                label: 'Cold Shabu-Shabu',         kind: 'dinner' },
+        { test: /^豚しゃぶ|^しゃぶしゃぶ/,   label: 'Shabu-Shabu',              kind: 'dinner' },
+        { test: /^牛すき|^すき焼/,           label: 'Wagyu Sukiyaki',           kind: 'dinner' },
+        { test: /^和牛BBQ|^ＢＢＱ|^BBQ/i,   label: 'Wagyu BBQ',                kind: 'dinner' },
+        { test: /^ビーグル冷|^ビーガン冷|^ヴィーガン冷/, label: 'Vegan Cold Shabu-Shabu',   kind: 'dinner' },
+        { test: /^ビーグル鍋|^ビーガン鍋|^ヴィーガン鍋/, label: 'Vegan Hot Pot & Chirashi', kind: 'dinner' },
+
+        //  旧フォームの略称。"Shabu(2人用)" のように単語が短い。
+        //  ★CONFIG.MEALS のラベルでは当たらないのでここで拾う。
+        //    当たらないと品目ごと黙って落ちてしまう。
+        { test: /^Shabu\b/i,                label: 'Shabu-Shabu',              kind: 'dinner' },
+        { test: /^Sukiyaki\b/i,             label: 'Wagyu Sukiyaki',           kind: 'dinner' },
+        { test: /^Chicken\b/i,              label: 'Chicken Hot Pot',          kind: 'dinner' },
+        { test: /^Breakfast\b/i,            label: 'Ochazuke Breakfast',       kind: 'breakfast' },
+      ],
+
+      //  食事サマリから人数を拾う書き方。
+      //   Chicken Hot Pot(3人前) / (2人用) / 朝食 x4 / （１人前）
+      //  ★「朝食 xYes」のように数字が無いものは人数不明として扱い、
+      //    同じラベルで数字が取れた行があればそちらを採る。
+      PORTION_PATTERNS: [
+        /[(（]\s*(\d+(?:\.\d+)?)\s*人[前用]\s*[)）]/,
+        /\bx\s*(\d+(?:\.\d+)?)\b/i,
+      ],
 
       //  自動で見つからないときに使う対応表。'yyyy-MM': 'タブ名'
       SHEET_OVERRIDES: {

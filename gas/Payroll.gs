@@ -1773,6 +1773,9 @@ function diagnoseOrderSheetMissing(ym) {
   L.push('════════════════════════════════════════════');
   L.push(`  ${month} 注文確認票への転記漏れ  ※書き込みなし`);
   L.push('════════════════════════════════════════════');
+  L.push('単位: 食事予約表=人数 / 注文確認票=セット'
+    + ` (夕食1セット=${personsPerSet_('dinner')}名 / 朝食1セット=${personsPerSet_('breakfast')}名)`);
+  L.push('      比較はすべて人数に揃えて行っています。');
 
   // ── 一次転記シート ──────────────────────────────────────
   const O = CONFIG.PAYROLL.ORDER_SHEET;
@@ -1783,15 +1786,13 @@ function diagnoseOrderSheetMissing(ym) {
     return null;
   }
   const values = sh.getRange(1, 1, sh.getLastRow(), sh.getLastColumn()).getDisplayValues();
-  const blocks = parseOrderSheetBlocks(values);
   const months = [];
-  blocks.forEach(b => { if (months.indexOf(b.month) < 0) months.push(b.month); });
+  parseOrderSheetBlocks(values).forEach(b => {
+    if (months.indexOf(b.month) < 0) months.push(b.month);
+  });
   L.push(`一次転記シートに入っている月: ${months.length ? months.join(' / ') : '(読めません)'}`);
-
   if (months.indexOf(month) < 0) {
     L.push(`★${month} のブロックがありません。`);
-    L.push('  「R8年10月」のような年月のセルと、その下に「日付／曜日／名前／注文品／数／金額」');
-    L.push('  の見出し行が必要です。');
     Logger.log(L.join('\n'));
     return null;
   }
@@ -1805,9 +1806,14 @@ function diagnoseOrderSheetMissing(ym) {
   });
 
   // ── 食事予約表 ─────────────────────────────────────────
-  const opt = readOptionRowsWithDeleted_()
-    .filter(o => o.checkin.slice(0, 7) === month);
-  const live = opt.filter(o => !o.deleted && o.meal);
+  const all  = readOptionRowsWithDeleted_().filter(o => o.checkin.slice(0, 7) === month);
+  const live = all.filter(o => !o.deleted && o.meal);
+
+  //  ★予約表は論理削除・論理更新。再提出で差し替わった古い行が残る。
+  //    同じ (日付, 部屋) に生きている行があれば「差し替え済み」であって
+  //    キャンセルではない。ここを分けないと誤検知だらけになる。
+  const liveKey = {};
+  all.filter(o => !o.deleted).forEach(o => { liveKey[`${o.checkin}|${o.room}`] = true; });
 
   const optByKey = {};
   live.forEach(o => {
@@ -1816,64 +1822,277 @@ function diagnoseOrderSheetMissing(ym) {
     optByKey[k].push(o);
   });
 
-  L.push(`食事予約表 ${month} の有効行: ${live.length}件`
-    + `  / 一次転記 ${month} の注文行: ${entries.length}件`);
-  L.push('');
+  L.push(`食事予約表 ${month}: 有効 ${live.length}件 / 論理削除 ${all.length - all.filter(o => !o.deleted).length}件`);
+  L.push(`一次転記 ${month}: ${entries.length}行`);
 
-  // ── ① 予約表にあるのに転記されていない ──────────────────
-  L.push('── ① 食事予約表にあるのに注文確認票に無い ──────────');
-  const missing = [];
-  Object.keys(optByKey).sort().forEach(k => {
-    if (sheetByKey[k]) return;
-    const d = k.split('|')[0], room = k.split('|')[1];
-    optByKey[k].forEach(o => {
-      missing.push(`${d} ${room} ${o.guestName || '(氏名なし)'}: ${o.meal}`);
-    });
+  //  ── 名前で引けるようにしておく (階違いを見つけるため) ──
+  const sheetNameIdx = {};
+  entries.forEach(e => {
+    if (!e.name) return;
+    const k = `${e.date}|${normName_(e.name)}`;
+    if (!sheetNameIdx[k]) sheetNameIdx[k] = [];
+    sheetNameIdx[k].push(e);
   });
-  if (missing.length) missing.forEach(x => L.push(`   ⚠ ${x}`));
-  else L.push('   なし');
 
-  // ── ② 転記されているが予約表に無い ────────────────────
+  const missing = [], floorMismatch = [], qtyMismatch = [], matched = [], extra = [];
+  const usedSheetKeys = {};
+
+  Object.keys(optByKey).sort().forEach(k => {
+    const parts = k.split('|');
+    const date = parts[0], room = parts[1];
+    const rows = optByKey[k];
+    const nm = rows.map(o => o.guestName).filter(x => x)[0] || '(氏名なし)';
+
+    //  予約表側の人数
+    const optP = { counts: {}, unknown: [] };
+    rows.forEach(o => {
+      const p = summaryToPortions(o.meal);
+      Object.keys(p.counts).forEach(lb => {
+        optP.counts[lb] = (optP.counts[lb] || 0) + p.counts[lb];
+      });
+      p.unknown.forEach(u => optP.unknown.push(u));
+    });
+
+    //  確認票側。同じ階 → 無ければ同じ日の同じ名前 (階違い)
+    let sheetRows = sheetByKey[k], sheetKey = k, noteFloor = '';
+    if (!sheetRows) {
+      const hit = sheetNameIdx[`${date}|${normName_(nm)}`];
+      if (hit && hit.length) {
+        sheetRows = hit;
+        sheetKey = `${date}|${hit[0].floor}`;
+        noteFloor = `予約表=${room} / 確認票=${hit[0].floor}`;
+      }
+    }
+
+    if (!sheetRows) {
+      missing.push({ date: date, room: room, name: nm, opt: optP });
+      return;
+    }
+    usedSheetKeys[sheetKey] = true;
+
+    const shP = entriesToPortions(sheetRows);
+    const diff = comparePortions(optP.counts, shP.counts);
+    const rec = { date: date, room: room, name: nm, opt: optP, sheet: shP,
+                  rows: sheetRows, diff: diff, noteFloor: noteFloor };
+    if (noteFloor) floorMismatch.push(rec);
+    else if (diff.length || optP.unknown.length || shP.unknown.length) qtyMismatch.push(rec);
+    else matched.push(rec);
+  });
+
+  Object.keys(sheetByKey).sort().forEach(k => {
+    if (usedSheetKeys[k] || optByKey[k]) return;
+    extra.push({ key: k, rows: sheetByKey[k] });
+  });
+
+  // ── ① 転記漏れ ─────────────────────────────────────────
   L.push('');
-  L.push('── ② 注文確認票にあるのに食事予約表に無い ──────────');
+  L.push('── ① 食事予約表にあるのに注文確認票に無い (転記漏れ) ──');
+  if (!missing.length) L.push('   なし');
+  missing.forEach(m => {
+    L.push(`   ⚠ ${m.date} ${m.room} ${m.name}`);
+    Object.keys(m.opt.counts).sort().forEach(lb => {
+      L.push(`        ${lb}  →  ${portionsToSetText_(lb, m.opt.counts[lb])}`);
+    });
+    m.opt.unknown.forEach(u => L.push(`        ⚠人数が読めない: ${u}`));
+  });
+
+  // ── ② 階が食い違っている ───────────────────────────────
+  L.push('');
+  L.push('── ② 同じ人が違う階に書かれている ────────────────────');
+  if (!floorMismatch.length) L.push('   なし');
+  floorMismatch.forEach(m => {
+    L.push(`   ⚠ ${m.date} ${m.name}   ${m.noteFloor}`);
+    logPortionDiff_(L, m);
+  });
+
+  // ── ③ 数量が合わない ───────────────────────────────────
+  L.push('');
+  L.push('── ③ 数量が合わない ──────────────────────────────');
+  if (!qtyMismatch.length) L.push('   なし');
+  qtyMismatch.forEach(m => {
+    L.push(`   ⚠ ${m.date} ${m.room} ${m.name}`);
+    logPortionDiff_(L, m);
+  });
+
+  // ── ④ 確認票にあるが予約表に無い ──────────────────────
+  L.push('');
+  L.push('── ④ 注文確認票にあるのに食事予約表に無い ────────────');
   L.push('   WhatsApp等で直接受けた注文。CleaningOverride に書けば');
   L.push('   清掃ボードにも出て、給料の仕出し判定にも乗ります。');
-  const extra = [];
-  Object.keys(sheetByKey).sort().forEach(k => {
-    if (optByKey[k]) return;
-    const d = k.split('|')[0], room = k.split('|')[1];
-    const items = sheetByKey[k].map(e => `${e.item}${e.qty ? ' x' + e.qty : ''}`);
-    const nm = sheetByKey[k][0].name || '(氏名なし)';
-    extra.push(`${d} ${room} ${nm}: ${items.join(', ')}`);
-  });
-  if (extra.length) extra.forEach(x => L.push(`   ・${x}`));
-  else L.push('   なし');
-
-  // ── ③ 両方にある分 (中身は人の目で見る) ────────────────
-  L.push('');
-  L.push('── ③ 両方にある分 (品目と数量は目で確認してください) ──');
-  L.push('   英語名/日本語名、人前/セット と表記が違うため機械判定しません。');
-  const both = Object.keys(optByKey).filter(k => sheetByKey[k]).sort();
-  if (!both.length) L.push('   なし');
-  both.forEach(k => {
-    const d = k.split('|')[0], room = k.split('|')[1];
-    L.push(`   ${d} ${room}`);
-    optByKey[k].forEach(o => L.push(`        予約表: ${o.guestName} — ${o.meal}`));
-    sheetByKey[k].forEach(e => L.push(`        確認票: ${e.name} — ${e.item} x${e.qty}`));
+  if (!extra.length) L.push('   なし');
+  extra.forEach(x => {
+    const parts = x.key.split('|');
+    const nm = x.rows.map(r => r.name).filter(v => v)[0] || '(氏名なし)';
+    L.push(`   ・${parts[0]} ${parts[1]} ${nm}: `
+      + x.rows.map(r => `${r.item} x${r.qty}`).join(', '));
   });
 
-  // ── ④ 論理削除された行に食事が残っている ──────────────
-  const cancelled = opt.filter(o => o.deleted && o.meal);
+  // ── ⑤ 本当にキャンセルされたもの ──────────────────────
+  //  ★同じ (日付, 部屋) に生きている行がある論理削除は「再提出による
+  //    差し替え」なので出さない。生きている行が無いものだけが
+  //    本当に消えた予約。
+  const cancelled = all.filter(o => o.deleted && o.meal && !liveKey[`${o.checkin}|${o.room}`]);
+  const replaced  = all.filter(o => o.deleted && o.meal &&  liveKey[`${o.checkin}|${o.room}`]);
   L.push('');
-  L.push('── ④ キャンセルされたのに食事予約が残っている ────────');
-  L.push('   注文確認票に書いてあれば取消の連絡が要ります。');
+  L.push('── ⑤ 予約が消えたのに食事注文が残っている ────────────');
+  L.push('   確認票に書いてあれば、ほなみやへ取消の連絡が要ります。');
   if (!cancelled.length) L.push('   なし');
   cancelled.forEach(o => {
     const k = `${o.checkin}|${o.room}`;
-    L.push(`   ${sheetByKey[k] ? '⚠ 確認票にも有り' : '・確認票には無し'}`
+    L.push(`   ${sheetByKey[k] ? '⚠ 確認票に残っている' : '・確認票には無い'}`
       + `  ${o.checkin} ${o.room} ${o.guestName}: ${o.meal}`);
   });
+  L.push(`   (再提出で差し替わった古い行 ${replaced.length}件は除いています)`);
+
+  L.push('');
+  L.push(`集計: 転記漏れ ${missing.length} / 階違い ${floorMismatch.length}`
+    + ` / 数量違い ${qtyMismatch.length} / 一致 ${matched.length}`
+    + ` / 確認票のみ ${extra.length} / 要取消 ${cancelled.length}`);
 
   Logger.log(L.join('\n'));
-  return { month: month, missing: missing, extra: extra, entries: entries.length };
+  return { month: month, missing: missing, floorMismatch: floorMismatch,
+           qtyMismatch: qtyMismatch, extra: extra, cancelled: cancelled };
+}
+
+/** 両側の人数を並べて差を出す (ログ用)。 */
+function logPortionDiff_(L, m) {
+  const labels = [];
+  Object.keys(m.opt.counts).forEach(k => { if (labels.indexOf(k) < 0) labels.push(k); });
+  Object.keys(m.sheet.counts).forEach(k => { if (labels.indexOf(k) < 0) labels.push(k); });
+  labels.sort().forEach(lb => {
+    const a = m.opt.counts[lb] || 0;
+    const b = m.sheet.counts[lb] || 0;
+    const mark = (a === b) ? '✓' : (b < a ? `⚠${a - b}人前 不足` : `⚠${b - a}人前 余分`);
+    L.push(`        ${lb}   予約表 ${a}人前  /  確認票 ${b}人前   ${mark}`);
+  });
+  m.opt.unknown.forEach(u => L.push(`        ⚠予約表の人数が読めない: ${u}`));
+  m.sheet.unknown.forEach(u => L.push(`        ⚠確認票の品目が読めない: ${u}`));
+}
+
+/** 氏名を突合用にそろえる。 */
+function normName_(v) {
+  return toHalfWidth(String(v || '')).toLowerCase().replace(/[\s,、]+/g, '');
+}
+
+// ── 単位をそろえる (人数 ⇔ セット) ──────────────────────────
+//  食事予約表 … 人数表記 (2人前 / 4人前)
+//  注文確認票 … セット表記 (夕食1セット=2名 / 朝食1セット=1名)
+//  突合は必ず「人数」に揃えてから行う。
+
+/** 1品目から人数を拾う。数字が無ければ null (人数不明)。 */
+function parsePortionCount_(item) {
+  const s = toHalfWidth(String(item || ''));
+  const pats = CONFIG.PAYROLL.ORDER_SHEET.PORTION_PATTERNS;
+  for (let i = 0; i < pats.length; i++) {
+    const m = s.match(pats[i]);
+    if (m) {
+      const n = Number(m[1]);
+      if (isFinite(n) && n > 0) return n;
+    }
+  }
+  return null;
+}
+
+/**
+ * 食事予約表の食事サマリを「ラベル → 人数」にする。
+ *  @return {{counts: Object, unknown: Array<string>}}
+ *    counts  = { 'Chicken Hot Pot': 3, 'Ochazuke Breakfast': 2 }
+ *    unknown = 人数が読めなかった品目の原文
+ */
+function summaryToPortions(summary) {
+  const counts = {}, unknown = [];
+  splitMealItems_(summary).forEach(item => {
+    const kind = classifyMealItem_(item);
+    if (kind === 'other') return;
+    const label = mealLabelOf_(item);
+    //  ★食事だと分かっているのにラベルが決まらない品目を黙って捨てない。
+    //    捨てると「予約表には無い」と誤判定して発注漏れになる。
+    if (!label) { unknown.push(`${item} (品目名が対応表に無い)`); return; }
+    const n = parsePortionCount_(item);
+    if (n === null) { unknown.push(item); return; }
+    counts[label] = (counts[label] || 0) + n;
+  });
+  return { counts: counts, unknown: unknown };
+}
+
+/** 品目からラベルを決める (英語の食事サマリ用)。 */
+function mealLabelOf_(item) {
+  const s = String(item || '').trim();
+  if (!s) return '';
+  const low = s.toLowerCase();
+  const half = toHalfWidth(s).toLowerCase();
+  for (let i = 0; i < CONFIG.MEALS.length; i++) {
+    const m = CONFIG.MEALS[i];
+    const lb = String(m.label).toLowerCase();
+    if (low.indexOf(lb) >= 0 || half.indexOf(lb) >= 0) return m.label;
+  }
+  //  旧フォームの略称など。ラベルに当たらなければ日本語の対応表も見る
+  return orderItemLabelOf_(s).label || '';
+}
+
+/** 注文確認票の日本語商品名 → {label, kind}。当たらなければ空。 */
+function orderItemLabelOf_(item) {
+  const s = toHalfWidth(String(item || '').trim());
+  const A = CONFIG.PAYROLL.ORDER_SHEET.ITEM_ALIASES;
+  for (let i = 0; i < A.length; i++) {
+    if (A[i].test.test(s)) return { label: A[i].label, kind: A[i].kind };
+  }
+  //  日本語で当たらない場合、英語ラベルで当ててみる (混在対策)
+  const low = s.toLowerCase();
+  for (let i = 0; i < CONFIG.MEALS.length; i++) {
+    const m = CONFIG.MEALS[i];
+    if (low.indexOf(String(m.label).toLowerCase()) >= 0) {
+      return { label: m.label, kind: m.kind };
+    }
+  }
+  return { label: '', kind: '' };
+}
+
+/** 1セットが何名分か。 */
+function personsPerSet_(kind) {
+  const P = CONFIG.PAYROLL.ORDER_SHEET.PERSONS_PER_SET;
+  return P[kind] || P.other || 1;
+}
+
+/**
+ * 注文確認票の行 (セット表記) を「ラベル → 人数」にする。
+ *  夕食 1セット → 2名 / 朝食 1セット → 1名
+ */
+function entriesToPortions(entries) {
+  const counts = {}, unknown = [];
+  (entries || []).forEach(e => {
+    const hit = orderItemLabelOf_(e.item);
+    if (!hit.label) { unknown.push(e.item); return; }
+    const sets = Number(toHalfWidth(String(e.qty || '')).replace(/[^0-9.]/g, ''));
+    if (!isFinite(sets) || sets <= 0) { unknown.push(`${e.item} (数が読めない)`); return; }
+    counts[hit.label] = (counts[hit.label] || 0) + sets * personsPerSet_(hit.kind);
+  });
+  return { counts: counts, unknown: unknown };
+}
+
+/** 人数をセット数の表記に戻す (表示用)。 */
+function portionsToSetText_(label, persons) {
+  const kind = (orderItemLabelOf_(label).kind) || 'dinner';
+  const per = personsPerSet_(kind);
+  const sets = persons / per;
+  return `${persons}人前 (${Math.round(sets * 100) / 100}セット)`;
+}
+
+/**
+ * 両側の「ラベル → 人数」を比べる。
+ * @return {Array<{label, opt, sheet, diff}>} 差があるものだけ
+ */
+function comparePortions(optCounts, sheetCounts) {
+  const labels = [];
+  Object.keys(optCounts || {}).forEach(k => { if (labels.indexOf(k) < 0) labels.push(k); });
+  Object.keys(sheetCounts || {}).forEach(k => { if (labels.indexOf(k) < 0) labels.push(k); });
+
+  const out = [];
+  labels.sort().forEach(label => {
+    const a = (optCounts || {})[label] || 0;
+    const b = (sheetCounts || {})[label] || 0;
+    if (a === b) return;
+    out.push({ label: label, opt: a, sheet: b, diff: b - a });
+  });
+  return out;
 }
