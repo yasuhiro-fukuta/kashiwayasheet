@@ -1759,6 +1759,55 @@ function daysBetweenDiag_(a, b) {
 // ── 注文確認票への転記漏れの診断 ──────────────────────────────
 
 /**
+ * 指定月の注文表を、読める場所から全部集める。
+ *  ① 同じブック内の一次転記タブ (ORDER_SHEET.LOCAL_SHEET_NAME)
+ *  ② 共有ファイル「柏屋注文確認票」の同じ月のタブ
+ *  どちらか片方でも読めればよい。一次転記タブを消しても②で動く。
+ *  @return {{sources: Array<{label, values}>, notes: Array<string>}}
+ */
+function collectOrderSheetSources_(month) {
+  const O = CONFIG.PAYROLL.ORDER_SHEET;
+  const sources = [], notes = [];
+
+  // ① 一次転記タブ
+  if (O.LOCAL_SHEET_NAME) {
+    const sh = SpreadsheetApp.getActive().getSheetByName(O.LOCAL_SHEET_NAME);
+    if (sh && sh.getLastRow() > 1) {
+      const v = sh.getRange(1, 1, sh.getLastRow(), sh.getLastColumn()).getDisplayValues();
+      const has = parseOrderSheetBlocks(v).some(b => b.month === month);
+      if (has) sources.push({ label: `一次転記「${sh.getName()}」`, values: v });
+      else notes.push(`一次転記タブに ${month} のブロックが無い`);
+    } else {
+      notes.push(`「${O.LOCAL_SHEET_NAME}」タブが無い`);
+    }
+  }
+
+  // ② 共有ファイル
+  const id = PropertiesService.getScriptProperties()
+    .getProperty(CONFIG.ORDER_EXPORT.PROP_TARGET_ID);
+  if (id) {
+    try {
+      const ss = SpreadsheetApp.openById(id);
+      const sheets = findOrderSheetsForMonth_(ss, month);
+      if (!sheets.length) notes.push(`共有ファイルに ${month} のタブが無い`);
+      sheets.forEach(sh => {
+        if (sh.getLastRow() < 2) return;
+        sources.push({
+          label: `共有ファイル「${sh.getName()}」`,
+          values: sh.getRange(1, 1, sh.getLastRow(), sh.getLastColumn()).getDisplayValues(),
+        });
+      });
+    } catch (e) {
+      notes.push(`共有ファイルを開けない (${e.message || e})`);
+    }
+  } else {
+    notes.push('共有ファイルのIDが未設定');
+  }
+
+  return { sources: sources, notes: notes };
+}
+
+/**
  * 「食事予約表にあるのに、ほなみや注文確認票に書かれていない注文」を探す。
  *
  *   diagnoseOrderSheetMissing()            … 当月
@@ -1786,27 +1835,31 @@ function diagnoseOrderSheetMissing(ym) {
     + ` (夕食1セット=${personsPerSet_('dinner')}名 / 朝食1セット=${personsPerSet_('breakfast')}名)`);
   L.push('      比較はすべて人数に揃えて行っています。');
 
-  // ── 一次転記シート ──────────────────────────────────────
-  const O = CONFIG.PAYROLL.ORDER_SHEET;
-  const sh = SpreadsheetApp.getActive().getSheetByName(O.LOCAL_SHEET_NAME);
-  if (!sh) {
-    L.push(`★「${O.LOCAL_SHEET_NAME}」タブがありません。`);
-    Logger.log(L.join('\n'));
-    return null;
-  }
-  const values = sh.getRange(1, 1, sh.getLastRow(), sh.getLastColumn()).getDisplayValues();
-  const months = [];
-  parseOrderSheetBlocks(values).forEach(b => {
-    if (months.indexOf(b.month) < 0) months.push(b.month);
-  });
-  L.push(`一次転記シートに入っている月: ${months.length ? months.join(' / ') : '(読めません)'}`);
-  if (months.indexOf(month) < 0) {
-    L.push(`★${month} のブロックがありません。`);
+  // ── 注文表 (一次転記タブ / 共有ファイル のどちらでもよい) ──
+  const src = collectOrderSheetSources_(month);
+  L.push(`注文表の読み元: ${src.sources.length ? src.sources.map(x => x.label).join(' + ') : '(読めません)'}`);
+  src.notes.forEach(n => L.push(`   ※ ${n}`));
+  if (!src.sources.length) {
+    L.push(`★${month} の注文表をどこからも読めません。`);
+    L.push('  一次転記タブか、共有ファイルの月タブのどちらかが要ります。');
     Logger.log(L.join('\n'));
     return null;
   }
 
-  const entries = readOrderSheetEntries(values, month);
+  //  複数の読み元に同じ行があると二重に数えるので、
+  //  (日付, 階, 品目, 数, 名前) でそろえて1つにする。
+  const seen = {};
+  const entries = [];
+  src.sources.forEach(sObj => {
+    readOrderSheetEntries(sObj.values, month).forEach(e => {
+      const k = [e.date, e.floor, e.item, e.qty, normName_(e.name)].join('|');
+      if (seen[k]) return;
+      seen[k] = true;
+      entries.push(e);
+    });
+  });
+  entries.sort((a, b) => (a.date + a.floor) < (b.date + b.floor) ? -1 : 1);
+
   const sheetByKey = {};
   entries.forEach(e => {
     const k = `${e.date}|${e.floor}`;
