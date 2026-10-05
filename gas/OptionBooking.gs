@@ -1,6 +1,6 @@
 /**
  * ============================================================
- *  OptionBooking.gs — オプション予約 → Google カレンダー  v2.24
+ *  OptionBooking.gs — オプション予約 → Google カレンダー  v2.25
  * ============================================================
  *  E-bikeレンタル / ギアレンタル / 荷物運び / ツアーガイド など、
  *  外部業者へ手配する予約を Google カレンダーに流す。
@@ -163,8 +163,15 @@ function buildOptionEventSpec(row) {
   const memo = g(C.MEMO);
 
   //  時刻は 行の指定 → 区分の既定 の順。どちらも無ければ終日。
-  const startT = normalizeOptionTime_(g(C.START)) || (kind ? kind.start : null);
-  const endT   = normalizeOptionTime_(g(C.END))   || (kind ? kind.end   : null);
+  let startT = normalizeOptionTime_(g(C.START)) || (kind ? kind.start : null);
+  let endT   = normalizeOptionTime_(g(C.END))   || (kind ? kind.end   : null);
+
+  //  ★片方しか決まらないときは所要時間で補う。
+  //    荷物運びのように区分の既定が終日でも、行に「9:00」と書いて
+  //    あればその時刻の予定にする。終日にすると書いた時刻が消える。
+  const dur = B.DEFAULT_DURATION_MIN || 60;
+  if (startT && !endT)      endT   = shiftTime_(startT,  dur);
+  else if (!startT && endT) startT = shiftTime_(endT,   -dur);
 
   const title = (B.TITLE || '{区分}{数量} {名前}{部屋}')
     .replace('{区分}', kind ? kind.label : kindRaw)
@@ -244,6 +251,16 @@ function normalizeOptionTime_(v) {
     if (h <= 23 && mi <= 59) return `${m[1]}:${m[2]}`;
   }
   return '';
+}
+
+/** 'HH:mm' を分だけずらす。日をまたぐ場合は 00:00〜23:59 に収める。 */
+function shiftTime_(ts, minutes) {
+  const p = ts.split(':');
+  let m = Number(p[0]) * 60 + Number(p[1]) + Number(minutes);
+  if (m < 0) m = 0;
+  if (m > 23 * 60 + 59) m = 23 * 60 + 59;
+  const h = Math.floor(m / 60), mi = m % 60;
+  return `${('0' + h).slice(-2)}:${('0' + mi).slice(-2)}`;
 }
 
 function parseOptionDate_(ds) {
