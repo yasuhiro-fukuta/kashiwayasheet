@@ -686,6 +686,12 @@ function writeCleaningBoard(ss, rows) {
   }
   if (!rows.length) return;
 
+  //  ★行が足りないと setValues が例外になる。
+  //    DAYS_AHEAD ぶん毎日2行ずつ伸びるので、足りなくなる前に足す。
+  const needRows = rows.length + 1;
+  if (sh.getMaxRows() < needRows) {
+    sh.insertRowsAfter(sh.getMaxRows(), needRows - sh.getMaxRows() + 50);
+  }
   sh.getRange(2, WS, rows.length, WIDTH).setValues(rows);
 }
 
@@ -783,23 +789,32 @@ function applyCheckinFormAlerts(stays, rows) {
   const sh = ensureCleaningSheet();
   const last = sh.getLastRow();
 
-  // 1. 前回の赤字を戻す (ヘッダー行は触らない)
-  if (last > 1) {
-    sh.getRange(2, C.KEY, last - 1, 1)
-      .setFontColor('#000000')
-      .setFontWeight('normal');
+  if (last <= 1) return 0;
+  if (A.ENABLED === false) {
+    sh.getRange(2, C.KEY, last - 1, 1).setFontColor('#000000').setFontWeight('normal');
+    return 0;
   }
 
-  if (A.ENABLED === false) return 0;
-
-  // 2. 対象行に赤字を付ける
+  //  ★E列の書式は「1セルずつ setFontColor」ではなく一括で入れる。
+  //    毎時バッチで走るため、セルごとに書式を付けるとファイル内に
+  //    書式の断片が積み上がり、スマホのアプリが開けなくなる原因になる。
+  //    (1回の setFontColors / setFontWeights で1ブロックとして入る)
   const idxs = computeCheckinFormAlertRows(stays, rows);
-  const color = A.COLOR || '#A50E0E';
-  idxs.forEach(i => {
-    const cell = sh.getRange(i + 2, C.KEY);   // rows[0] はシート2行目
-    cell.setFontColor(color);
-    if (A.BOLD !== false) cell.setFontWeight('bold');
-  });
+  const hit = {};
+  idxs.forEach(i => { hit[i] = true; });
+
+  const color  = A.COLOR || '#A50E0E';
+  const bold   = (A.BOLD !== false);
+  const colors  = [];
+  const weights = [];
+  for (let r = 0; r < last - 1; r++) {
+    const on = !!hit[r];
+    colors.push([on ? color : '#000000']);
+    weights.push([(on && bold) ? 'bold' : 'normal']);
+  }
+  const rg = sh.getRange(2, C.KEY, last - 1, 1);
+  rg.setFontColors(colors);
+  rg.setFontWeights(weights);
 
   return idxs.length;
 }
@@ -851,9 +866,17 @@ function listPendingCheckinForms() {
 function setupCleaningFormatting() {
   const C = CONFIG.COL_CLEAN;
   const sh = ensureCleaningSheet();
-  // 固定の 2000 行だと DAYS_AHEAD を伸ばしたときに色の付かない行が
-  // 出るため、実際の行数から決める (少し余裕をみる)。
-  const maxRow = Math.max(sh.getMaxRows(), sh.getLastRow() + 200, 2000);
+  //  ★数式の条件付き書式はセルごとに評価されるので、範囲を広げすぎると
+  //    スマホのアプリが開けなくなる。
+  //    以前は getMaxRows() を使っていたため、シートの裏にある空行
+  //    (数万行あることがある) まで全部が評価対象になっていた。
+  //    実データの行数 + 余白ぶんだけにする。行が増えたら
+  //    このメニューをもう一度実行すればよい (buildCleaningBoard が
+  //    毎回呼ぶので放っておいても追従する)。
+  const maxRow = Math.min(
+    Math.max(sh.getLastRow() + 200, 400),
+    sh.getMaxRows()
+  );
   const range = sh.getRange(2, 1, maxRow - 1, C.UPDATED_AT);
   const noteRange = sh.getRange(2, C.NOTE, maxRow - 1, 1);
 

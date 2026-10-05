@@ -411,7 +411,7 @@ function lodgifyItemToRow(it, fetchedAt, firstSeen) {
   row[C.SOURCE - 1]       = it.source;
   row[C.AMOUNT - 1]       = it.amount || '';
   row[C.CURRENCY - 1]     = it.currency;
-  row[C.RAW_JSON - 1]     = it.raw;
+  row[C.RAW_JSON - 1]     = trimRawJson_(it.raw);
   row[C.NOTE - 1]         = '';
   row[C.ADDONS - 1]       = (it.addons && it.addons.length)
     ? JSON.stringify(it.addons) : '';
@@ -544,4 +544,19 @@ function dumpLodgifyBookings() {
   } else {
     Logger.log('部屋はすべて 1F / 2F に解決できました。');
   }
+}
+
+/**
+ * 原文JSON を短く切る。
+ *  この列を読んでいるコードは無く、調査用に先頭だけあれば足りる。
+ *  全文を残すと件数ぶん積み上がり、スマホのアプリで
+ *  スプレッドシートが開けなくなる原因になる。
+ */
+function trimRawJson_(raw) {
+  const A = (CONFIG.LODGIFY && CONFIG.LODGIFY.ADDONS) || {};
+  const max = (A.RAW_JSON_MAX_CHARS != null) ? A.RAW_JSON_MAX_CHARS : 0;
+  const s = String(raw == null ? '' : raw);
+  if (max < 0) return '';
+  if (max === 0 || s.length <= max) return s;
+  return s.slice(0, max) + `…(全${s.length}字)`;
 }
