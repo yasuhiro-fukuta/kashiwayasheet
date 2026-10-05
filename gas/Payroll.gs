@@ -191,54 +191,125 @@ function findOrderSheetForMonth_(ss, month) {
 }
 
 /**
- * 見出し行を探し、「日付」列と、その右側で最初の「注文品」列を組にする。
- *  1階ぶんと2階ぶんで2組できる。月によって間の空列の数が違うため、
- *  位置ではなく見出しで決める。
- * @return {{headerRow: number, pairs: Array<{date:number,item:number}>}}
+ * 1枚のシートを「月ごとのブロック」に切り分ける。
+ *
+ *  ★一次転記シートは1タブに複数の月を縦に並べる運用になった
+ *    (2026-10)。先頭の年月だけ見ると、下に並んだ別の月の注文を
+ *    先頭の月の日付として読んでしまう。必ずブロックに分けること。
+ *
+ *  ブロックの始まり … 「R8年10月」のような年月が入ったセルがある行
+ *  ブロックの見出し … その後に最初に現れる「日付」「注文品」を含む行
+ *  ブロックの終わり … 次のブロックの始まり (無ければシートの末尾)
+ *
+ *  @return {Array<{month, headerRow, end, pairs:Array<{date,name,item,qty}>}>}
  */
-function findOrderSheetColumns_(values) {
+function parseOrderSheetBlocks(values) {
   const O = CONFIG.PAYROLL.ORDER_SHEET;
-  const maxRow = Math.min(O.HEADER_SEARCH_ROWS, values.length);
+  const blocks = [];
+  let cur = null;
 
-  for (let r = 0; r < maxRow; r++) {
-    const row = values[r].map(v => String(v || '').trim());
-    const dateCols = [];
-    const itemCols = [];
-    row.forEach((v, i) => {
+  for (let r = 0; r < values.length; r++) {
+    const row = values[r] || [];
+    const cells = row.map(v => String(v || '').trim());
+
+    //  年月のセルがあれば新しいブロックの始まり
+    for (let c = 0; c < cells.length; c++) {
+      const m = orderSheetMonthOf_(cells[c]);
+      if (m) {
+        cur = { month: m, headerRow: -1, start: r, end: values.length, pairs: [] };
+        blocks.push(cur);
+        break;
+      }
+    }
+
+    //  見出し行 (そのブロックで最初に出てきたものだけ採る)
+    if (!cur || cur.headerRow >= 0) continue;
+    const dateCols = [], itemCols = [], nameCols = [];
+    cells.forEach((v, i) => {
       if (v === O.HEADER_DATE) dateCols.push(i);
       if (v === O.HEADER_ITEM) itemCols.push(i);
+      if (v === O.HEADER_NAME) nameCols.push(i);
     });
     if (!dateCols.length || !itemCols.length) continue;
 
-    const pairs = [];
+    cur.headerRow = r;
     dateCols.forEach(d => {
-      //  その日付列より右で最初の注文品列を組にする
+      //  その日付列より右で最初の注文品列を組にする (1階ぶん / 2階ぶん)
       const item = itemCols.filter(i => i > d).sort((a, b) => a - b)[0];
-      if (item !== undefined) pairs.push({ date: d, item: item });
+      if (item === undefined) return;
+      const name = nameCols.filter(i => i > d && i < item).sort((a, b) => b - a)[0];
+      cur.pairs.push({
+        date: d,
+        name: (name !== undefined) ? name : item - 1,
+        item: item,
+        qty:  item + 1,
+      });
     });
-    if (pairs.length) return { headerRow: r, pairs: pairs };
   }
-  return { headerRow: -1, pairs: [] };
+
+  for (let i = 0; i < blocks.length - 1; i++) blocks[i].end = blocks[i + 1].start;
+  return blocks.filter(b => b.headerRow >= 0 && b.pairs.length);
 }
 
 /**
- * 表の中身から対象年月を割り出す。
- *  一次転記シートはタブ名に年月が無く、見出しの上のセルに
- *  「R8年9月」のように入っている。それを拾う。
- *  ★拾えなければ '' を返す。年月が分からないまま使うと
- *    9月の注文を10月の給料に付けてしまうため。
+ * 1枚のシートから、指定月の注文を1行ずつ取り出す。
+ *  @return {Array<{date, floor, name, item, qty}>}
+ *    floor は列の組の順番から決める (1組目=1F / 2組目=2F)。
  */
-function orderSheetMonthFromCells_(values) {
+function readOrderSheetEntries(values, month) {
   const O = CONFIG.PAYROLL.ORDER_SHEET;
-  const maxRow = Math.min(O.MONTH_CELL_SEARCH_ROWS, values.length);
-  for (let r = 0; r < maxRow; r++) {
-    const row = values[r] || [];
-    for (let c = 0; c < row.length; c++) {
-      const m = orderSheetMonthOf_(row[c]);
-      if (m) return m;
-    }
-  }
-  return '';
+  const blocks = parseOrderSheetBlocks(values).filter(b => b.month === month);
+  const out = [];
+
+  blocks.forEach(b => {
+    b.pairs.forEach((pair, idx) => {
+      const floor = CONFIG.CLEANING.ROOMS[idx] || `組${idx + 1}`;
+      let day = 0, name = '';
+      for (let r = b.headerRow + 1; r < b.end; r++) {
+        const row = values[r] || [];
+        const dcell = toHalfWidth(String(row[pair.date] || '').trim());
+        const m = dcell.match(O.DAY_PATTERN);
+        if (m) {
+          const n = Number(m[1]);
+          //  日付が変わったら名前も引き継ぎを切る
+          if (n >= 1 && n <= 31 && n !== day) { day = n; name = ''; }
+        }
+        if (!day) continue;
+
+        const nm = String(row[pair.name] || '').trim();
+        if (nm) name = nm;
+
+        const item = String(row[pair.item] || '').trim();
+        if (!item) continue;
+        out.push({
+          date:  `${month}-${('0' + day).slice(-2)}`,
+          floor: floor,
+          name:  name,
+          item:  item,
+          qty:   String(row[pair.qty] || '').trim(),
+        });
+      }
+    });
+  });
+
+  out.sort((a, b) => (a.date + a.floor) < (b.date + b.floor) ? -1 : 1);
+  return out;
+}
+
+/**
+ * 表の中身から「夕食がある日」を集める。シートに触らないのでテストできる。
+ *  ・月ごとのブロックに分けてから、指定月のブロックだけを読む。
+ *  ・日付セルは品目が複数ある日は空欄になるので直前の日を引き継ぐ。
+ *  ・1階ぶん・2階ぶんのどちらでも夕食があればその日は夕食あり。
+ */
+function collectOrderSheetDinners(values, month) {
+  const out = {};
+  readOrderSheetEntries(values, month).forEach(e => {
+    if (classifyMealItem_(e.item) !== 'dinner') return;
+    if (!out[e.date]) out[e.date] = [];
+    if (out[e.date].indexOf(e.item) < 0) out[e.date].push(e.item);
+  });
+  return out;
 }
 
 /**
@@ -248,38 +319,28 @@ function orderSheetMonthFromCells_(values) {
 function readOneOrderSheet_(sh, month, label) {
   const name = `${label}「${sh.getName()}」`;
   const last = sh.getLastRow(), lastCol = sh.getLastColumn();
-  if (last < 2 || lastCol < 2) {
-    return { ok: true, dates: {}, sheetName: name };
-  }
+  if (last < 2 || lastCol < 2) return { ok: true, dates: {}, sheetName: name };
 
   const values = sh.getRange(1, 1, last, lastCol).getDisplayValues();
+  const blocks = parseOrderSheetBlocks(values);
+  const months = [];
+  blocks.forEach(b => { if (months.indexOf(b.month) < 0) months.push(b.month); });
 
-  //  タブ名で年月が決まらないシート (一次転記など) は中身から拾う
-  let sheetMonth = orderSheetMonthOf_(sh.getName()) || orderSheetMonthFromCells_(values);
-  if (!sheetMonth) {
+  if (!months.length) {
     return {
       ok: false, dates: {}, sheetName: name,
-      reason: `${name} の年月が読めない。`
-        + '見出しの上に「R8年9月」のような表記があるか確認してください',
+      reason: `${name} に年月と見出しが見つからない。`
+        + '「R8年10月」のような年月のセルと「日付」「注文品」の見出しが要る',
     };
   }
-  if (sheetMonth !== month) {
+  if (months.indexOf(month) < 0) {
     return {
       ok: false, dates: {}, sheetName: name,
-      reason: `${name} は ${sheetMonth} の表で、計算対象の ${month} と違う`,
-    };
-  }
-
-  const cols = findOrderSheetColumns_(values);
-  if (!cols.pairs.length) {
-    const O = CONFIG.PAYROLL.ORDER_SHEET;
-    return {
-      ok: false, dates: {}, sheetName: name,
-      reason: `${name} に「${O.HEADER_DATE}」と「${O.HEADER_ITEM}」の見出しが見つからない`,
+      reason: `${name} に ${month} が無い (入っているのは ${months.join(' / ')})`,
     };
   }
 
-  return { ok: true, sheetName: name, dates: collectOrderSheetDinners(values, cols, month) };
+  return { ok: true, sheetName: name, dates: collectOrderSheetDinners(values, month) };
 }
 
 /**
@@ -350,40 +411,6 @@ function readOrderSheetDinners_(month) {
     reason: anyOk ? '' : (reasons.join(' / ') || '参照先が設定されていない'),
     notes: reasons,
   };
-}
-
-/**
- * 表の中身から「夕食がある日」を集める。シートに触らないのでテストできる。
- *  ・日付セルは品目が複数ある日は空欄になるので直前の日を引き継ぐ。
- *  ・1階ぶん・2階ぶんそれぞれで独立に引き継ぐ (列の組ごとに別の列なので)。
- *  ・どちらの階でも夕食があればその日は夕食あり。
- */
-function collectOrderSheetDinners(values, cols, month) {
-  const O = CONFIG.PAYROLL.ORDER_SHEET;
-  const out = {};
-
-  cols.pairs.forEach(pair => {
-    let day = 0;
-    for (let r = cols.headerRow + 1; r < values.length; r++) {
-      const row = values[r] || [];
-      const dcell = toHalfWidth(String(row[pair.date] || '').trim());
-      const m = dcell.match(O.DAY_PATTERN);
-      if (m) {
-        const n = Number(m[1]);
-        if (n >= 1 && n <= 31) day = n;
-      }
-      if (!day) continue;
-
-      const item = String(row[pair.item] || '').trim();
-      if (!item) continue;
-      if (classifyMealItem_(item) !== 'dinner') continue;
-
-      const date = `${month}-${('0' + day).slice(-2)}`;
-      if (!out[date]) out[date] = [];
-      if (out[date].indexOf(item) < 0) out[date].push(item);
-    }
-  });
-  return out;
 }
 
 // ── 計算本体 (シートに触らない。テストから直接呼べる) ──────────
@@ -1718,4 +1745,135 @@ function daysBetweenDiag_(a, b) {
   const da = toDate(a), db = toDate(b);
   if (!da || !db) return 999;
   return Math.round((da.getTime() - db.getTime()) / 86400000);
+}
+
+// ── 注文確認票への転記漏れの診断 ──────────────────────────────
+
+/**
+ * 「食事予約表にあるのに、ほなみや注文確認票に書かれていない注文」を探す。
+ *
+ *   diagnoseOrderSheetMissing()            … 当月
+ *   diagnoseOrderSheetMissing('2026-10')   … 月を指定
+ *
+ *  食事予約表(LatestOptions) と 一次転記シート を (日付, 階) で突き合わせる。
+ *  書き込みはしない。
+ *
+ *  ★品目名は英語(Wagyu Sukiyaki)と日本語(牛すき+おにぎり)で表記が違い、
+ *    数量も「人前」と「セット」で単位が違う。機械的に1対1で照合すると
+ *    誤検知だらけになるので、
+ *      ① 片方にしか無い (日付, 階) を機械判定で出す  ← ここが本命
+ *      ② 両方にある分は中身を並べて出す (人の目で見る)
+ *    という形にしてある。
+ */
+function diagnoseOrderSheetMissing(ym) {
+  const month = normalizePayrollMonth_(ym
+    || Utilities.formatDate(todayJst(), CONFIG.TZ, 'yyyy-MM'));
+
+  const L = [];
+  L.push('════════════════════════════════════════════');
+  L.push(`  ${month} 注文確認票への転記漏れ  ※書き込みなし`);
+  L.push('════════════════════════════════════════════');
+
+  // ── 一次転記シート ──────────────────────────────────────
+  const O = CONFIG.PAYROLL.ORDER_SHEET;
+  const sh = SpreadsheetApp.getActive().getSheetByName(O.LOCAL_SHEET_NAME);
+  if (!sh) {
+    L.push(`★「${O.LOCAL_SHEET_NAME}」タブがありません。`);
+    Logger.log(L.join('\n'));
+    return null;
+  }
+  const values = sh.getRange(1, 1, sh.getLastRow(), sh.getLastColumn()).getDisplayValues();
+  const blocks = parseOrderSheetBlocks(values);
+  const months = [];
+  blocks.forEach(b => { if (months.indexOf(b.month) < 0) months.push(b.month); });
+  L.push(`一次転記シートに入っている月: ${months.length ? months.join(' / ') : '(読めません)'}`);
+
+  if (months.indexOf(month) < 0) {
+    L.push(`★${month} のブロックがありません。`);
+    L.push('  「R8年10月」のような年月のセルと、その下に「日付／曜日／名前／注文品／数／金額」');
+    L.push('  の見出し行が必要です。');
+    Logger.log(L.join('\n'));
+    return null;
+  }
+
+  const entries = readOrderSheetEntries(values, month);
+  const sheetByKey = {};
+  entries.forEach(e => {
+    const k = `${e.date}|${e.floor}`;
+    if (!sheetByKey[k]) sheetByKey[k] = [];
+    sheetByKey[k].push(e);
+  });
+
+  // ── 食事予約表 ─────────────────────────────────────────
+  const opt = readOptionRowsWithDeleted_()
+    .filter(o => o.checkin.slice(0, 7) === month);
+  const live = opt.filter(o => !o.deleted && o.meal);
+
+  const optByKey = {};
+  live.forEach(o => {
+    const k = `${o.checkin}|${o.room}`;
+    if (!optByKey[k]) optByKey[k] = [];
+    optByKey[k].push(o);
+  });
+
+  L.push(`食事予約表 ${month} の有効行: ${live.length}件`
+    + `  / 一次転記 ${month} の注文行: ${entries.length}件`);
+  L.push('');
+
+  // ── ① 予約表にあるのに転記されていない ──────────────────
+  L.push('── ① 食事予約表にあるのに注文確認票に無い ──────────');
+  const missing = [];
+  Object.keys(optByKey).sort().forEach(k => {
+    if (sheetByKey[k]) return;
+    const d = k.split('|')[0], room = k.split('|')[1];
+    optByKey[k].forEach(o => {
+      missing.push(`${d} ${room} ${o.guestName || '(氏名なし)'}: ${o.meal}`);
+    });
+  });
+  if (missing.length) missing.forEach(x => L.push(`   ⚠ ${x}`));
+  else L.push('   なし');
+
+  // ── ② 転記されているが予約表に無い ────────────────────
+  L.push('');
+  L.push('── ② 注文確認票にあるのに食事予約表に無い ──────────');
+  L.push('   WhatsApp等で直接受けた注文。CleaningOverride に書けば');
+  L.push('   清掃ボードにも出て、給料の仕出し判定にも乗ります。');
+  const extra = [];
+  Object.keys(sheetByKey).sort().forEach(k => {
+    if (optByKey[k]) return;
+    const d = k.split('|')[0], room = k.split('|')[1];
+    const items = sheetByKey[k].map(e => `${e.item}${e.qty ? ' x' + e.qty : ''}`);
+    const nm = sheetByKey[k][0].name || '(氏名なし)';
+    extra.push(`${d} ${room} ${nm}: ${items.join(', ')}`);
+  });
+  if (extra.length) extra.forEach(x => L.push(`   ・${x}`));
+  else L.push('   なし');
+
+  // ── ③ 両方にある分 (中身は人の目で見る) ────────────────
+  L.push('');
+  L.push('── ③ 両方にある分 (品目と数量は目で確認してください) ──');
+  L.push('   英語名/日本語名、人前/セット と表記が違うため機械判定しません。');
+  const both = Object.keys(optByKey).filter(k => sheetByKey[k]).sort();
+  if (!both.length) L.push('   なし');
+  both.forEach(k => {
+    const d = k.split('|')[0], room = k.split('|')[1];
+    L.push(`   ${d} ${room}`);
+    optByKey[k].forEach(o => L.push(`        予約表: ${o.guestName} — ${o.meal}`));
+    sheetByKey[k].forEach(e => L.push(`        確認票: ${e.name} — ${e.item} x${e.qty}`));
+  });
+
+  // ── ④ 論理削除された行に食事が残っている ──────────────
+  const cancelled = opt.filter(o => o.deleted && o.meal);
+  L.push('');
+  L.push('── ④ キャンセルされたのに食事予約が残っている ────────');
+  L.push('   注文確認票に書いてあれば取消の連絡が要ります。');
+  if (!cancelled.length) L.push('   なし');
+  cancelled.forEach(o => {
+    const k = `${o.checkin}|${o.room}`;
+    L.push(`   ${sheetByKey[k] ? '⚠ 確認票にも有り' : '・確認票には無し'}`
+      + `  ${o.checkin} ${o.room} ${o.guestName}: ${o.meal}`);
+  });
+
+  Logger.log(L.join('\n'));
+  return { month: month, missing: missing, extra: extra, entries: entries.length };
 }
