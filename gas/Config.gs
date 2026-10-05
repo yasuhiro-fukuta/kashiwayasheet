@@ -1132,6 +1132,13 @@ const CONFIG = {
     //  ★IDはコードに書かない。setOptionCalendarId('...') で1回登録する。
     PROP_CALENDAR_ID: 'OPTION_CALENDAR_ID',
 
+    //  Script Property が未設定のときに使うカレンダー。
+    //   'primary' … 実行ユーザーのメインカレンダー
+    //   ''        … 使わない (未設定ならスキップする)
+    //  ★専用カレンダーに分けたくなったら setOptionCalendarId() で
+    //    そのIDを登録する。登録した方が常に優先される。
+    DEFAULT_CALENDAR_ID: 'primary',
+
     //  状態の文字
     STATUS_FIXED:  '確定',
     STATUS_CANCEL: '取消',
