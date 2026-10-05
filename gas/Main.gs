@@ -69,6 +69,15 @@ function runBatch() {
       Logger.log(`矛盾チェックに失敗 (処理は続行): ${e.stack || e}`);
     }
 
+    // ── オプション予約 → カレンダー (v2.24) ──────────────────
+    // カレンダー権限が無くてもバッチは止めない。
+    try {
+      const ob = syncOptionBookings(now);
+      dlog(formatOptionBookingResult_(ob));
+    } catch (e) {
+      Logger.log(`オプション予約の反映に失敗 (処理は続行): ${e.stack || e}`);
+    }
+
     // ── ほなみや注文確認票への転記 (v2.22) ────────────────────
     // 専用タブ1枚をまるごと書き換えるだけ。月のカレンダー表は触らない。
     // 転記先が未設定・.xlsx のまま・権限なし でもバッチは止めない。
@@ -357,6 +366,10 @@ function onOpen() {
     .addItem('🩺 特別報酬(4人超)の診断 (前月)',       'diagnoseSetupBonus')
     .addItem('🍱 食事予約表と清掃表の突合 (今日)',     'diagnoseMealMatch')
     .addItem('📋 注文確認票への転記漏れ (当月)',       'diagnoseOrderSheetMissing')
+    .addSeparator()
+    .addItem('📅 オプション予約をカレンダーに反映',     'runOptionBookingSyncOnly')
+    .addItem('🔍 オプション予約の確認 (書込なし)',     'dumpOptionBookings')
+    .addItem('🆕 オプション予約シートを作る',          'ensureOptionBookingSheet')
     .addSeparator()
     .addItem('🐢 重さを調べる (スマホで開けない時)',    'diagnoseSheetWeight')
     .addItem('🧹 未使用の行・列を削って軽くする',      'trimSheetGrids')

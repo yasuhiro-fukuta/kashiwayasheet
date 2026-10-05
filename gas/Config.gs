@@ -1110,6 +1110,72 @@ const CONFIG = {
     NOTICE: '※このタブは柏屋のシステムが毎時書き換えます。手で書いた内容は消えます。',
   },
 
+  // ── オプション予約 → Google カレンダー v2.24 ────────────────
+  //  E-bikeレンタル / ギアレンタル / 荷物運び / ツアーガイド など、
+  //  外部業者に手配する予約を扱う。
+  //
+  //  流れ:
+  //    別スレで確定 → 「オプション予約」シートに1行入る
+  //                 → 毎時バッチが Google カレンダーに予定を作る
+  //
+  //  ★シートは人(または別スレ)が書く領域。GASが書くのは
+  //    K列(登録日時) と L列(イベントID) の2列だけ。
+  //  ★J列「状態」が起点。
+  //      確定 … カレンダーに登録する (既にあれば内容を更新する)
+  //      取消 … 登録済みの予定を削除する
+  //      空欄 … 何もしない (下書き)
+  OPTION_BOOKING: {
+    ENABLED: true,
+    SHEET:   'オプション予約',
+
+    //  カレンダーIDを入れる Script Property のキー。
+    //  ★IDはコードに書かない。setOptionCalendarId('...') で1回登録する。
+    PROP_CALENDAR_ID: 'OPTION_CALENDAR_ID',
+
+    //  状態の文字
+    STATUS_FIXED:  '確定',
+    STATUS_CANCEL: '取消',
+
+    //  1回のバッチで作る予定の上限 (暴走よけ)
+    MAX_PER_RUN: 50,
+
+    //  区分ごとの既定時刻。E列/F列が空のときに使う。
+    //  null を入れると終日の予定にする。
+    //  ★Beyond Nakasendo Cycling は
+    //    チェックイン日10:00 〜 チェックアウト日15:00 が受付時間。
+    KINDS: [
+      { test: /E\s*-?\s*バイク|e\s*-?bike/i, label: 'Eバイク',     start: '10:00', end: '17:00' },
+      { test: /ギア|gear/i,                   label: 'ギアレンタル', start: '10:00', end: '17:00' },
+      { test: /荷物|バゲ|baggage|luggage/i,    label: '荷物運び',     start: null,    end: null    },
+      { test: /ガイド|ツアー|guide|tour/i,     label: 'ツアーガイド', start: '09:00', end: '12:00' },
+      { test: /泉屋/,                         label: '泉屋送迎',     start: '17:30', end: '18:00' },
+      { test: /タクシー|taxi/i,               label: 'タクシー',     start: null,    end: null    },
+    ],
+
+    //  予定のタイトル。{区分} {数量} {名前} {部屋} {業者} を差し替える。
+    TITLE: '{区分}{数量} {名前}{部屋}',
+
+    //  カレンダーの色 (CalendarApp.EventColor の名前)。空なら既定色。
+    COLOR: '',
+  },
+
+  // オプション予約シートの列
+  COL_OPTBK: {
+    DATE:       1,   // A 実施日
+    KIND:       2,   // B 区分 (Eバイク / ギアレンタル / 荷物運び / ツアーガイド)
+    GUEST_NAME: 3,   // C 宿泊者名
+    ROOM:       4,   // D 部屋
+    START:      5,   // E 開始時刻 (空なら区分の既定、それも無ければ終日)
+    END:        6,   // F 終了時刻
+    QTY:        7,   // G 数量
+    VENDOR:     8,   // H 業者
+    MEMO:       9,   // I メモ
+    STATUS:    10,   // J 状態 (確定 / 取消 / 空)  ★ここが起点
+    SYNCED_AT: 11,   // K 登録日時   ★GASが書く
+    EVENT_ID:  12,   // L イベントID ★GASが書く
+  },
+  OPTBK_WIDTH: 12,
+
   PROP: {
     LAST_PROCESSED: 'LAST_PROCESSED_AT',
     LAST_OPEN_RUN:  'LAST_OPEN_RUN_AT',
@@ -1160,4 +1226,22 @@ function setOrderExportTargetId(id) {
   PropertiesService.getScriptProperties()
     .setProperty(CONFIG.ORDER_EXPORT.PROP_TARGET_ID, clean);
   Logger.log('転記先スプレッドシートIDを保存しました。');
+}
+
+/**
+ * オプション予約を入れる Google カレンダーのIDを保存する。
+ *
+ *  カレンダーIDは Google カレンダーの
+ *    設定 → (カレンダー名) → カレンダーの統合 → カレンダーID
+ *  にある文字列 (xxxx@group.calendar.google.com など)。
+ *  自分のメインカレンダーなら 'primary' でもよい。
+ *
+ *  ★このリポジトリは公開なのでIDをコードに書かない。
+ *    エディタから一度だけ実行し、実行後は呼び出しを消すこと。
+ */
+function setOptionCalendarId(id) {
+  if (!id) throw new Error('カレンダーIDが空です');
+  PropertiesService.getScriptProperties()
+    .setProperty(CONFIG.OPTION_BOOKING.PROP_CALENDAR_ID, String(id).trim());
+  Logger.log('オプション予約のカレンダーIDを保存しました。');
 }
