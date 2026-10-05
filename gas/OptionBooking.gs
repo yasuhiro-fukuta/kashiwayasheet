@@ -1,6 +1,6 @@
 /**
  * ============================================================
- *  OptionBooking.gs — オプション予約 → Google カレンダー  v2.25
+ *  OptionBooking.gs — オプション予約 → Google カレンダー  v2.26
  * ============================================================
  *  E-bikeレンタル / ギアレンタル / 荷物運び / ツアーガイド など、
  *  外部業者へ手配する予約を Google カレンダーに流す。
@@ -89,8 +89,8 @@ function syncOptionBookings(now) {
     try {
       if (status === B.STATUS_CANCEL) {
         if (!eventId) return;
-        const ev = cal.getEventSeriesById(eventId);
-        if (ev) { ev.deleteEventSeries(); deleted++; }
+        const ev = fetchOptionEvent_(cal, eventId);
+        if (ev) { deleteOptionEvent_(ev); deleted++; }
         writes.push([rowNo, '', '']);
         return;
       }
@@ -101,12 +101,11 @@ function syncOptionBookings(now) {
       if (spec.error) { errors.push(`${rowNo}行目: ${spec.error}`); return; }
 
       if (eventId) {
-        const ev = cal.getEventSeriesById(eventId);
+        const ev = fetchOptionEvent_(cal, eventId);
         if (ev) {
           ev.setTitle(spec.title);
           ev.setDescription(spec.description);
-          if (spec.allDay) ev.setAllDayDates(spec.start, spec.endExclusive);
-          else             ev.setTime(spec.start, spec.end);
+          applyOptionEventTime_(ev, spec);
           updated++;
           writes.push([rowNo, fmtDateTime(now || nowJst()), eventId]);
           return;
@@ -251,6 +250,46 @@ function normalizeOptionTime_(v) {
     if (h <= 23 && mi <= 59) return `${m[1]}:${m[2]}`;
   }
   return '';
+}
+
+/**
+ *  イベントIDから予定を取り出す。
+ *  ★作るのは単発の予定だけなので getEventById (CalendarEvent) を先に見る。
+ *    CalendarEventSeries には setTime / setAllDayDates が無いため、
+ *    系列として取ってしまうと時刻の書き換えで落ちる。
+ */
+function fetchOptionEvent_(cal, eventId) {
+  try {
+    const ev = cal.getEventById(eventId);
+    if (ev) return ev;
+  } catch (e) { /* 単発として取れないときは系列で探す */ }
+  try {
+    return cal.getEventSeriesById(eventId);
+  } catch (e) {
+    return null;
+  }
+}
+
+/** 予定の日時を spec に合わせる。終日 ⇄ 時刻つき の入れ替えもここ。 */
+function applyOptionEventTime_(ev, spec) {
+  if (spec.allDay) {
+    if (typeof ev.setAllDayDates === 'function') {
+      ev.setAllDayDates(spec.start, spec.endExclusive);
+      return;
+    }
+  } else if (typeof ev.setTime === 'function') {
+    ev.setTime(spec.start, spec.end);
+    return;
+  }
+  throw new Error('予定の日時を変えられませんでした。'
+    + 'J列を一度「取消」にして実行し、そのあと「確定」に戻してください。');
+}
+
+/** 予定を消す。単発なら deleteEvent、系列なら deleteEventSeries。 */
+function deleteOptionEvent_(ev) {
+  if (typeof ev.deleteEvent === 'function') { ev.deleteEvent(); return; }
+  if (typeof ev.deleteEventSeries === 'function') { ev.deleteEventSeries(); return; }
+  throw new Error('予定を消せませんでした。カレンダーから手で消してください。');
 }
 
 /** 'HH:mm' を分だけずらす。日をまたぐ場合は 00:00〜23:59 に収める。 */
