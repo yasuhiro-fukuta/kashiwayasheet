@@ -273,6 +273,7 @@ function buildAnnotateMessages_(month, audit) {
         + `  →  ${portionsToSetText_(lb, m.opt.counts[lb])} と書いてください`);
     });
     m.opt.unknown.forEach(u => L.push(`   ・⚠人数が読めません: ${u}`));
+    (m.opt.presumed || []).forEach(u => L.push(`   ・※${u}`));
     out.push({ date: m.date, floor: m.room, text: L.join('\n') });
   });
 
@@ -334,6 +335,8 @@ function annotateDiffLines_(L, m) {
   });
   m.opt.unknown.forEach(u => add.push(`   ・⚠予約の人数が読めません: ${u}`));
   m.sheet.unknown.forEach(u => add.push(`   ・⚠この表の品目が読めません: ${u}`));
+  //  当て推量で数えた分は黙っておかない
+  (m.opt.presumed || []).forEach(u => add.push(`   ・※${u}`));
   return add;
 }
 

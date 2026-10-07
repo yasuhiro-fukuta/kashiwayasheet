@@ -1892,13 +1892,14 @@ function buildOrderSheetAudit(month, entries, allOptRows, today) {
     const nm = rows.map(o => o.guestName).filter(x => x)[0] || '(氏名なし)';
 
     //  予約表側の人数
-    const optP = { counts: {}, unknown: [] };
+    const optP = { counts: {}, unknown: [], presumed: [] };
     rows.forEach(o => {
-      const p = summaryToPortions(o.meal);
+      const p = summaryToPortions(o.meal, o.guests);
       Object.keys(p.counts).forEach(lb => {
         optP.counts[lb] = (optP.counts[lb] || 0) + p.counts[lb];
       });
       p.unknown.forEach(u => optP.unknown.push(u));
+      (p.presumed || []).forEach(u => optP.presumed.push(u));
     });
 
     //  確認票側。同じ階 → 無ければ同じ日の同じ名前 (階違い)
@@ -2087,6 +2088,15 @@ function diagnoseOrderSheetMissing(ym) {
   L.push(`   (再提出で差し替わった古い行 ${a.replaced.length}件は別途除いています)`);
 
   L.push('');
+  const presumedN = []
+    .concat(a.missing, a.floorMismatch, a.qtyMismatch, a.matched)
+    .filter(m => m.opt && m.opt.presumed && m.opt.presumed.length).length;
+  if (presumedN) {
+    L.push('');
+    L.push(`※人数の記載が無く、宿泊人数ぶんとして数えた予約が ${presumedN}件 あります`);
+    L.push('  (「朝食 xYes」や朝食込みプランなど)。各件の ※ 行を見てください。');
+  }
+
   L.push(`集計: 転記漏れ ${a.missing.length} / 階違い ${a.floorMismatch.length}`
     + ` / 数量違い ${a.qtyMismatch.length} / 一致 ${a.matched.length}`
     + ` / 確認票のみ ${a.extraLive.length} / 要取消 ${a.cancelled.length}`
@@ -2141,6 +2151,7 @@ function logPortionDiff_(L, m) {
   });
   m.opt.unknown.forEach(u => L.push(`        ⚠予約表の人数が読めない: ${u}`));
   m.sheet.unknown.forEach(u => L.push(`        ⚠確認票の品目が読めない: ${u}`));
+  (m.opt.presumed || []).forEach(u => L.push(`        ※${u}`));
 }
 
 /** 氏名を突合用にそろえる。 */
@@ -2173,8 +2184,10 @@ function parsePortionCount_(item) {
  *    counts  = { 'Chicken Hot Pot': 3, 'Ochazuke Breakfast': 2 }
  *    unknown = 人数が読めなかった品目の原文
  */
-function summaryToPortions(summary) {
-  const counts = {}, unknown = [];
+function summaryToPortions(summary, guests) {
+  const O = CONFIG.PAYROLL.ORDER_SHEET;
+  const counts = {}, unknown = [], presumed = [];
+  const g = parseGuestCount_(guests);
   splitMealItems_(summary).forEach(item => {
     const kind = classifyMealItem_(item);
     if (kind === 'other') return;
@@ -2182,11 +2195,31 @@ function summaryToPortions(summary) {
     //  ★食事だと分かっているのにラベルが決まらない品目を黙って捨てない。
     //    捨てると「予約表には無い」と誤判定して発注漏れになる。
     if (!label) { unknown.push(`${item} (品目名が対応表に無い)`); return; }
-    const n = parsePortionCount_(item);
-    if (n === null) { unknown.push(item); return; }
+    let n = parsePortionCount_(item);
+    if (n === null) {
+      //  ★人数が書かれていない食事は、宿泊人数ぶんとして数える。
+      //    「朝食 xYes」や、朝食込みプラン(料金¥0)がこれにあたる。
+      //    2026-10 発注者指示。数えないと発注漏れになる方が困る。
+      //    当て推量なので presumed に入れて、ログと注記に必ず出す。
+      if (O.PRESUME_GUESTS_WHEN_NO_COUNT && g) {
+        n = g;
+        presumed.push(`${item} → 宿泊人数の${g}名として数えました`);
+      } else {
+        unknown.push(item);
+        return;
+      }
+    }
     counts[label] = (counts[label] || 0) + n;
   });
-  return { counts: counts, unknown: unknown };
+  return { counts: counts, unknown: unknown, presumed: presumed };
+}
+
+/** 食事表の人数欄から数を拾う ('2' '2名' '大人2' どれでも)。読めなければ 0。 */
+function parseGuestCount_(v) {
+  const m = toHalfWidth(String(v || '')).match(/(\d+)/);
+  if (!m) return 0;
+  const n = Number(m[1]);
+  return (isFinite(n) && n > 0 && n < 100) ? n : 0;
 }
 
 /** 品目からラベルを決める (英語の食事サマリ用)。 */
