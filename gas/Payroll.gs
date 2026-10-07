@@ -263,9 +263,26 @@ function parseOrderSheetBlocks(values) {
  *    floor は列の組の順番から決める (1組目=1F / 2組目=2F)。
  */
 function readOrderSheetEntries(values, month) {
+  return scanOrderSheet(values, month).entries;
+}
+
+/**
+ * 1枚のシートから、指定月の注文と「その中身がどのセルにあるか」を取り出す。
+ *
+ *  ★行・列まで返すのは、注記 (メモ) を正しいセルに付けるため。
+ *    値を書き換えるのではなく、そのセルに注記を添える使い方をする。
+ *
+ *  @return {{
+ *    entries: Array<{date, floor, name, item, qty, row, dateCol, nameCol, itemCol, qtyCol}>,
+ *    dayCell: Object   // 'yyyy-MM-dd|1F' → {row, col}  日付セルの位置 (すべて1始まり)
+ *  }}
+ *    floor は列の組の順番から決める (1組目=1F / 2組目=2F)。
+ */
+function scanOrderSheet(values, month) {
   const O = CONFIG.PAYROLL.ORDER_SHEET;
   const blocks = parseOrderSheetBlocks(values).filter(b => b.month === month);
   const out = [];
+  const dayCell = {};
 
   blocks.forEach(b => {
     b.pairs.forEach((pair, idx) => {
@@ -278,7 +295,13 @@ function readOrderSheetEntries(values, month) {
         if (m) {
           const n = Number(m[1]);
           //  日付が変わったら名前も引き継ぎを切る
-          if (n >= 1 && n <= 31 && n !== day) { day = n; name = ''; }
+          if (n >= 1 && n <= 31 && n !== day) {
+            day = n; name = '';
+            //  その日の注記を付ける先。最初に出てきたセルを使う
+            //  (結合セルだと値が入るのは左上だけなので、そこが先頭になる)
+            const dk = `${month}-${('0' + day).slice(-2)}|${floor}`;
+            if (!dayCell[dk]) dayCell[dk] = { row: r + 1, col: pair.date + 1 };
+          }
         }
         if (!day) continue;
 
@@ -293,13 +316,19 @@ function readOrderSheetEntries(values, month) {
           name:  name,
           item:  item,
           qty:   String(row[pair.qty] || '').trim(),
+          //  ★セルの位置 (1始まり)。突合の結果には影響させない。
+          row:     r + 1,
+          dateCol: pair.date + 1,
+          nameCol: pair.name + 1,
+          itemCol: pair.item + 1,
+          qtyCol:  pair.qty  + 1,
         });
       }
     });
   });
 
   out.sort((a, b) => (a.date + a.floor) < (b.date + b.floor) ? -1 : 1);
-  return out;
+  return { entries: out, dayCell: dayCell };
 }
 
 /**
@@ -1808,58 +1837,19 @@ function collectOrderSheetSources_(month) {
 }
 
 /**
- * 「食事予約表にあるのに、ほなみや注文確認票に書かれていない注文」を探す。
+ * 注文確認票と食事予約表を突き合わせる。シートに触らないのでテストできる。
  *
- *   diagnoseOrderSheetMissing()            … 当月
- *   diagnoseOrderSheetMissing('2026-10')   … 月を指定
+ *  ★突合の判断はここ1か所だけに置く。
+ *    ログ(diagnoseOrderSheetMissing)と注記(annotateOrderSheet)が
+ *    別々に判定すると、画面とシートで違うことを言い出す。
  *
- *  食事予約表(LatestOptions) と 一次転記シート を (日付, 階) で突き合わせる。
- *  書き込みはしない。
- *
- *  ★品目名は英語(Wagyu Sukiyaki)と日本語(牛すき+おにぎり)で表記が違い、
- *    数量も「人前」と「セット」で単位が違う。機械的に1対1で照合すると
- *    誤検知だらけになるので、
- *      ① 片方にしか無い (日付, 階) を機械判定で出す  ← ここが本命
- *      ② 両方にある分は中身を並べて出す (人の目で見る)
- *    という形にしてある。
+ *  @param {string} month      'yyyy-MM'
+ *  @param {Array}  entries    注文確認票の行 (重複除去済み)
+ *  @param {Array}  allOptRows 食事予約表の行 (論理削除も含む / 当月分)
+ *  @param {string} today      'yyyy-MM-dd'
+ *  @return {Object}
  */
-function diagnoseOrderSheetMissing(ym) {
-  const month = normalizePayrollMonth_(ym
-    || Utilities.formatDate(todayJst(), CONFIG.TZ, 'yyyy-MM'));
-
-  const L = [];
-  L.push('════════════════════════════════════════════');
-  L.push(`  ${month} 注文確認票への転記漏れ  ※書き込みなし`);
-  L.push('════════════════════════════════════════════');
-  L.push('単位: 食事予約表=人数 / 注文確認票=セット'
-    + ` (夕食1セット=${personsPerSet_('dinner')}名 / 朝食1セット=${personsPerSet_('breakfast')}名)`);
-  L.push('      比較はすべて人数に揃えて行っています。');
-
-  // ── 注文表 (一次転記タブ / 共有ファイル のどちらでもよい) ──
-  const src = collectOrderSheetSources_(month);
-  L.push(`注文表の読み元: ${src.sources.length ? src.sources.map(x => x.label).join(' + ') : '(読めません)'}`);
-  src.notes.forEach(n => L.push(`   ※ ${n}`));
-  if (!src.sources.length) {
-    L.push(`★${month} の注文表をどこからも読めません。`);
-    L.push('  一次転記タブか、共有ファイルの月タブのどちらかが要ります。');
-    Logger.log(L.join('\n'));
-    return null;
-  }
-
-  //  複数の読み元に同じ行があると二重に数えるので、
-  //  (日付, 階, 品目, 数, 名前) でそろえて1つにする。
-  const seen = {};
-  const entries = [];
-  src.sources.forEach(sObj => {
-    readOrderSheetEntries(sObj.values, month).forEach(e => {
-      const k = [e.date, e.floor, e.item, e.qty, normName_(e.name)].join('|');
-      if (seen[k]) return;
-      seen[k] = true;
-      entries.push(e);
-    });
-  });
-  entries.sort((a, b) => (a.date + a.floor) < (b.date + b.floor) ? -1 : 1);
-
+function buildOrderSheetAudit(month, entries, allOptRows, today) {
   const sheetByKey = {};
   entries.forEach(e => {
     const k = `${e.date}|${e.floor}`;
@@ -1867,8 +1857,7 @@ function diagnoseOrderSheetMissing(ym) {
     sheetByKey[k].push(e);
   });
 
-  // ── 食事予約表 ─────────────────────────────────────────
-  const all  = readOptionRowsWithDeleted_().filter(o => o.checkin.slice(0, 7) === month);
+  const all  = allOptRows;
   const live = all.filter(o => !o.deleted && o.meal);
 
   //  ★予約表は論理削除・論理更新。再提出で差し替わった古い行が残る。
@@ -1883,9 +1872,6 @@ function diagnoseOrderSheetMissing(ym) {
     if (!optByKey[k]) optByKey[k] = [];
     optByKey[k].push(o);
   });
-
-  L.push(`食事予約表 ${month}: 有効 ${live.length}件 / 論理削除 ${all.length - all.filter(o => !o.deleted).length}件`);
-  L.push(`一次転記 ${month}: ${entries.length}行`);
 
   //  ── 名前で引けるようにしておく (階違いを見つけるため) ──
   const sheetNameIdx = {};
@@ -1916,13 +1902,14 @@ function diagnoseOrderSheetMissing(ym) {
     });
 
     //  確認票側。同じ階 → 無ければ同じ日の同じ名前 (階違い)
-    let sheetRows = sheetByKey[k], sheetKey = k, noteFloor = '';
+    let sheetRows = sheetByKey[k], sheetKey = k, noteFloor = '', sheetFloor = '';
     if (!sheetRows) {
       const hit = sheetNameIdx[`${date}|${normName_(nm)}`];
       if (hit && hit.length) {
         sheetRows = hit;
-        sheetKey = `${date}|${hit[0].floor}`;
-        noteFloor = `予約表=${room} / 確認票=${hit[0].floor}`;
+        sheetFloor = hit[0].floor;
+        sheetKey = `${date}|${sheetFloor}`;
+        noteFloor = `予約表=${room} / 確認票=${sheetFloor}`;
       }
     }
 
@@ -1935,7 +1922,8 @@ function diagnoseOrderSheetMissing(ym) {
     const shP = entriesToPortions(sheetRows);
     const diff = comparePortions(optP.counts, shP.counts);
     const rec = { date: date, room: room, name: nm, opt: optP, sheet: shP,
-                  rows: sheetRows, diff: diff, noteFloor: noteFloor };
+                  rows: sheetRows, diff: diff,
+                  noteFloor: noteFloor, sheetFloor: sheetFloor };
     if (noteFloor) floorMismatch.push(rec);
     else if (diff.length || optP.unknown.length || shP.unknown.length) qtyMismatch.push(rec);
     else matched.push(rec);
@@ -1946,37 +1934,7 @@ function diagnoseOrderSheetMissing(ym) {
     extra.push({ key: k, rows: sheetByKey[k] });
   });
 
-  // ── ① 転記漏れ ─────────────────────────────────────────
-  L.push('');
-  L.push('── ① 食事予約表にあるのに注文確認票に無い (転記漏れ) ──');
-  if (!missing.length) L.push('   なし');
-  missing.forEach(m => {
-    L.push(`   ⚠ ${m.date} ${m.room} ${m.name}`);
-    Object.keys(m.opt.counts).sort().forEach(lb => {
-      L.push(`        ${lb}  →  ${portionsToSetText_(lb, m.opt.counts[lb])}`);
-    });
-    m.opt.unknown.forEach(u => L.push(`        ⚠人数が読めない: ${u}`));
-  });
-
-  // ── ② 階が食い違っている ───────────────────────────────
-  L.push('');
-  L.push('── ② 同じ人が違う階に書かれている ────────────────────');
-  if (!floorMismatch.length) L.push('   なし');
-  floorMismatch.forEach(m => {
-    L.push(`   ⚠ ${m.date} ${m.name}   ${m.noteFloor}`);
-    logPortionDiff_(L, m);
-  });
-
-  // ── ③ 数量が合わない ───────────────────────────────────
-  L.push('');
-  L.push('── ③ 数量が合わない ──────────────────────────────');
-  if (!qtyMismatch.length) L.push('   なし');
-  qtyMismatch.forEach(m => {
-    L.push(`   ⚠ ${m.date} ${m.room} ${m.name}`);
-    logPortionDiff_(L, m);
-  });
-
-  // ── ⑤ 予約が消えた分 ──────────────────────────────────
+  //  ── 予約が消えた分 ──────────────────────────────────
   //  ★同じ (日付, 部屋) に生きている行がある論理削除は「再提出による
   //    差し替え」なので出さない。
   //  ★★さらに、過ぎた日は出し方を分ける。
@@ -1985,7 +1943,6 @@ function diagnoseOrderSheetMissing(ym) {
   //    落ちるので、終わった予約はいずれ必ず削除扱いになる。
   //    つまり過去日の「削除」はキャンセルではなく、ただ終わっただけ。
   //    取消連絡が要るのは「これから提供する日」だけ。
-  const today = fmtDate(todayJst());
   const deadRows = all.filter(o => o.deleted && o.meal && !liveKey[`${o.checkin}|${o.room}`]);
   const replaced = all.filter(o => o.deleted && o.meal &&  liveKey[`${o.checkin}|${o.room}`]);
 
@@ -2004,31 +1961,120 @@ function diagnoseOrderSheetMissing(ym) {
   //  ⑤に出た (日付,部屋) は④から除く。同じ話を2回出さない。
   const deadKey = {};
   dead.forEach(o => { deadKey[`${o.checkin}|${o.room}`] = true; });
+  const extraLive = extra.filter(x => !deadKey[x.key]);
+
+  return {
+    month: month,
+    entries: entries,
+    sheetByKey: sheetByKey,
+    liveCount: live.length,
+    deletedCount: all.length - all.filter(o => !o.deleted).length,
+    missing: missing,
+    floorMismatch: floorMismatch,
+    qtyMismatch: qtyMismatch,
+    matched: matched,
+    extra: extra,
+    extraLive: extraLive,
+    cancelled: cancelled,
+    finished: finished,
+    replaced: replaced,
+  };
+}
+
+/**
+ * 「食事予約表にあるのに、ほなみや注文確認票に書かれていない注文」を探す。
+ *
+ *   diagnoseOrderSheetMissing()            … 当月
+ *   diagnoseOrderSheetMissing('2026-10')   … 月を指定
+ *
+ *  食事予約表(LatestOptions) と 注文確認票 を (日付, 階) で突き合わせる。
+ *  書き込みはしない。
+ *
+ *  ★品目名は英語(Wagyu Sukiyaki)と日本語(牛すき+おにぎり)で表記が違い、
+ *    数量も「人前」と「セット」で単位が違う。機械的に1対1で照合すると
+ *    誤検知だらけになるので、
+ *      ① 片方にしか無い (日付, 階) を機械判定で出す  ← ここが本命
+ *      ② 両方にある分は中身を並べて出す (人の目で見る)
+ *    という形にしてある。
+ */
+function diagnoseOrderSheetMissing(ym) {
+  const month = normalizePayrollMonth_(ym
+    || Utilities.formatDate(todayJst(), CONFIG.TZ, 'yyyy-MM'));
+
+  const L = [];
+  L.push('════════════════════════════════════════════');
+  L.push(`  ${month} 注文確認票への転記漏れ  ※書き込みなし`);
+  L.push('════════════════════════════════════════════');
+  L.push('単位: 食事予約表=人数 / 注文確認票=セット'
+    + ` (夕食1セット=${personsPerSet_('dinner')}名 / 朝食1セット=${personsPerSet_('breakfast')}名)`);
+  L.push('      比較はすべて人数に揃えて行っています。');
+
+  const r = readOrderSheetAudit_(month);
+  r.srcLabels.forEach(x => L.push(x));
+  if (!r.ok) {
+    L.push(`★${month} の注文表をどこからも読めません。`);
+    L.push('  一次転記タブか、共有ファイルの月タブのどちらかが要ります。');
+    Logger.log(L.join('\n'));
+    return null;
+  }
+  const a = r.audit;
+
+  L.push(`食事予約表 ${month}: 有効 ${a.liveCount}件 / 論理削除 ${a.deletedCount}件`);
+  L.push(`注文確認票 ${month}: ${a.entries.length}行`);
+
+  // ── ① 転記漏れ ─────────────────────────────────────────
+  L.push('');
+  L.push('── ① 食事予約表にあるのに注文確認票に無い (転記漏れ) ──');
+  if (!a.missing.length) L.push('   なし');
+  a.missing.forEach(m => {
+    L.push(`   ⚠ ${m.date} ${m.room} ${m.name}`);
+    Object.keys(m.opt.counts).sort().forEach(lb => {
+      L.push(`        ${lb}  →  ${portionsToSetText_(lb, m.opt.counts[lb])}`);
+    });
+    m.opt.unknown.forEach(u => L.push(`        ⚠人数が読めない: ${u}`));
+  });
+
+  // ── ② 階が食い違っている ───────────────────────────────
+  L.push('');
+  L.push('── ② 同じ人が違う階に書かれている ────────────────────');
+  if (!a.floorMismatch.length) L.push('   なし');
+  a.floorMismatch.forEach(m => {
+    L.push(`   ⚠ ${m.date} ${m.name}   ${m.noteFloor}`);
+    logPortionDiff_(L, m);
+  });
+
+  // ── ③ 数量が合わない ───────────────────────────────────
+  L.push('');
+  L.push('── ③ 数量が合わない ──────────────────────────────');
+  if (!a.qtyMismatch.length) L.push('   なし');
+  a.qtyMismatch.forEach(m => {
+    L.push(`   ⚠ ${m.date} ${m.room} ${m.name}`);
+    logPortionDiff_(L, m);
+  });
 
   // ── ④ 確認票にあるが予約表に無い ──────────────────────
   L.push('');
   L.push('── ④ 注文確認票にあるのに食事予約表に無い ────────────');
   L.push('   WhatsApp等で直接受けた注文。CleaningOverride に書けば');
   L.push('   清掃ボードにも出て、給料の仕出し判定にも乗ります。');
-  const extraLive = extra.filter(x => !deadKey[x.key]);
-  if (!extraLive.length) L.push('   なし');
-  extraLive.forEach(x => {
+  if (!a.extraLive.length) L.push('   なし');
+  a.extraLive.forEach(x => {
     const parts = x.key.split('|');
-    const nm = x.rows.map(r => r.name).filter(v => v)[0] || '(氏名なし)';
+    const nm = x.rows.map(e => e.name).filter(v => v)[0] || '(氏名なし)';
     L.push(`   ・${parts[0]} ${parts[1]} ${nm}: `
-      + x.rows.map(r => `${r.item} x${r.qty}`).join(', '));
+      + x.rows.map(e => `${e.item} x${e.qty}`).join(', '));
   });
-  if (extra.length !== extraLive.length) {
-    L.push(`   (⑤に出ている ${extra.length - extraLive.length}件は除いています)`);
+  if (a.extra.length !== a.extraLive.length) {
+    L.push(`   (⑤に出ている ${a.extra.length - a.extraLive.length}件は除いています)`);
   }
 
   L.push('');
   L.push('── ⑤ 予約が消えたのに食事注文が残っている (これからの日) ──');
   L.push('   確認票に書いてあれば、ほなみやへ取消の連絡が要ります。');
-  if (!cancelled.length) L.push('   なし');
-  cancelled.forEach(o => {
+  if (!a.cancelled.length) L.push('   なし');
+  a.cancelled.forEach(o => {
     const k = `${o.checkin}|${o.room}`;
-    L.push(`   ${sheetByKey[k] ? '⚠ 確認票に残っている' : '・確認票には無い'}`
+    L.push(`   ${a.sheetByKey[k] ? '⚠ 確認票に残っている' : '・確認票には無い'}`
       + `  ${o.checkin} ${o.room} ${o.guestName}: ${o.meal}`);
   });
 
@@ -2036,19 +2082,50 @@ function diagnoseOrderSheetMissing(ym) {
   L.push('── (参考) 済んだ日の削除 ─────────────────────────');
   L.push('   過去の宿泊は iCal から落ちるため、終わった予約は必ず');
   L.push('   「削除」になります。キャンセルではありません。対応不要です。');
-  L.push(`   ${finished.length}件`);
-  finished.forEach(o => L.push(`   ・${o.checkin} ${o.room} ${o.guestName}`));
-  L.push(`   (再提出で差し替わった古い行 ${replaced.length}件は別途除いています)`);
+  L.push(`   ${a.finished.length}件`);
+  a.finished.forEach(o => L.push(`   ・${o.checkin} ${o.room} ${o.guestName}`));
+  L.push(`   (再提出で差し替わった古い行 ${a.replaced.length}件は別途除いています)`);
 
   L.push('');
-  L.push(`集計: 転記漏れ ${missing.length} / 階違い ${floorMismatch.length}`
-    + ` / 数量違い ${qtyMismatch.length} / 一致 ${matched.length}`
-    + ` / 確認票のみ ${extraLive.length} / 要取消 ${cancelled.length}`
-    + ` / 済んだ削除 ${finished.length}`);
+  L.push(`集計: 転記漏れ ${a.missing.length} / 階違い ${a.floorMismatch.length}`
+    + ` / 数量違い ${a.qtyMismatch.length} / 一致 ${a.matched.length}`
+    + ` / 確認票のみ ${a.extraLive.length} / 要取消 ${a.cancelled.length}`
+    + ` / 済んだ削除 ${a.finished.length}`);
 
   Logger.log(L.join('\n'));
-  return { month: month, missing: missing, floorMismatch: floorMismatch,
-           qtyMismatch: qtyMismatch, extra: extra, cancelled: cancelled };
+  return a;
+}
+
+/**
+ * 突合に必要なものをシートから読んで buildOrderSheetAudit に渡す。
+ *  シートを読むのはここだけ。判断は buildOrderSheetAudit 側。
+ *  @return {{ok, audit, srcLabels: Array<string>}}
+ */
+function readOrderSheetAudit_(month) {
+  const srcLabels = [];
+  const src = collectOrderSheetSources_(month);
+  srcLabels.push(`注文表の読み元: ${src.sources.length
+    ? src.sources.map(x => x.label).join(' + ') : '(読めません)'}`);
+  src.notes.forEach(n => srcLabels.push(`   ※ ${n}`));
+  if (!src.sources.length) return { ok: false, audit: null, srcLabels: srcLabels };
+
+  //  複数の読み元に同じ行があると二重に数えるので、
+  //  (日付, 階, 品目, 数, 名前) でそろえて1つにする。
+  const seen = {};
+  const entries = [];
+  src.sources.forEach(sObj => {
+    readOrderSheetEntries(sObj.values, month).forEach(e => {
+      const k = [e.date, e.floor, e.item, e.qty, normName_(e.name)].join('|');
+      if (seen[k]) return;
+      seen[k] = true;
+      entries.push(e);
+    });
+  });
+  entries.sort((a, b) => (a.date + a.floor) < (b.date + b.floor) ? -1 : 1);
+
+  const all = readOptionRowsWithDeleted_().filter(o => o.checkin.slice(0, 7) === month);
+  const audit = buildOrderSheetAudit(month, entries, all, fmtDate(todayJst()));
+  return { ok: true, audit: audit, srcLabels: srcLabels };
 }
 
 /** 両側の人数を並べて差を出す (ログ用)。 */

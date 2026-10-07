@@ -88,6 +88,16 @@ function runBatch() {
       Logger.log(`注文確認票への転記に失敗 (処理は続行): ${e.stack || e}`);
     }
 
+    // ── 注文確認票に「直す所」をメモで書く (v2.27) ───────────────
+    // 値は書き換えず、日付セルのメモだけを入れ替える。
+    // 人が書いたメモは残す。権限が無くてもバッチは止めない。
+    try {
+      const an = annotateOrderSheetFromBatch();
+      dlog(formatAnnotateResult_(an));
+    } catch (e) {
+      Logger.log(`注文確認票への注記に失敗 (処理は続行): ${e.stack || e}`);
+    }
+
     dlog(`=== Batch end ===`);
     setLastProcessedAt(now);
   } catch (e) {
@@ -376,6 +386,9 @@ function onOpen() {
     .addSeparator()
     .addItem('📤 注文確認票へ転記',                   'runOrderExportOnly')
     .addItem('🔍 転記内容を確認 (書き込みなし)',       'dumpOrderExport')
+    .addItem('📝 注文確認票に直す所をメモで書く',       'runOrderAnnotateOnly')
+    .addItem('🔍 書くメモを確認 (書き込みなし)',       'previewOrderSheetNotes')
+    .addItem('🧽 柏屋が書いたメモを消す',             'clearOrderSheetNotes')
     .addSeparator()
     .addItem('🎨 条件付き書式を設定 (Options)',       'setupConditionalFormatting')
     .addItem('🎨 条件付き書式を設定 (清掃ボード)',    'setupCleaningFormatting')
