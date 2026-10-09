@@ -96,7 +96,7 @@
 | `CheckinForm.gs` | 370 | 宿泊者名簿フォームの取込と未提出の赤字 |
 | `Staff.gs` | 132 | 担当者一覧（Staff シート）の自動生成 |
 | `Consistency.gs` | 395 | 手動入力の矛盾を「指摘事項」シートへ |
-| `BoardNote.gs` | 229 | 指摘を清掃ボード A列・D列のメモで出す |
+| `BoardNote.gs` | 233 | 指摘を清掃ボード A列・D列のメモで出す |
 | `Payroll.gs` | 2305 | 給与計算 + 注文確認票の読み取り・突合 |
 | `OrderExport.gs` | 284 | 注文確認票への一覧転記 |
 | `OrderAnnotate.gs` | 379 | 注文確認票へ「直す所」をメモで注記 |
