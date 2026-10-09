@@ -269,7 +269,13 @@ function collectIssues() {
       ? `${d}_${room}_${name}@${sent}`
       : `${d}_${room}_${name}`;
 
-    if (on('orderedButGone') && deleted && done === '済' && !optActive[`${d}|${room}`]) {
+    //  ★過ぎた日は出さない。
+    //    過去の宿泊は iCal から落ちるので、終わった予約は必ず
+    //    「削除」になる。キャンセルではなく、ただ終わっただけ。
+    //    取消の連絡が要るのは「これから提供する日」だけ。
+    //    (注文確認票の突合 ⑤ と同じ考え方に揃えた)
+    if (on('orderedButGone') && deleted && done === '済'
+        && d >= today && !optActive[`${d}|${room}`]) {
       add(key, 'orderedButGone', 'LatestOptions', d, room, `予約が消えたのに ほなみや転記済=済 (${name})`);
     }
     if (deleted) return;

@@ -157,9 +157,13 @@ const CONFIG = {
       //  ── D列 接客・食事まわり ──
       nightMissing:      { col: 4, text: '次の部屋貸しに対応する接客スタッフがアサインされていません' },
       'unknownStaff.接客': { col: 4, text: 'この接客担当者名が Staff シートにありません' },
-      orderedButGone:    { col: 4, text: '予約が無くなったのに、ほなみやへ転記済みになっています' },
       mealNoStay:        { col: 4, text: '食事の予約がありますが、この日に宿泊者がいません' },
       guestsMissing:     { col: 4, text: '食事予約の人数が入っていません' },
+
+      //  ★orderedButGone (予約が無くなったのに転記済) はここに入れない。
+      //    ほなみやさんへ「取消してください」と伝える話なので、
+      //    清掃ボードではなく注文確認票のメモに出す
+      //    (OrderAnnotate の ⑤ 取消)。2026-10-09 発注者指示。
     },
   },
 
