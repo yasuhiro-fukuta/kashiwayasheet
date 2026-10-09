@@ -82,6 +82,15 @@ const CONFIG = {
   //  運用に合わないルールが出てきたら、コードではなくここを切る。
   ISSUE_CHECK: {
     ENABLED:    true,
+
+    //  指摘事項シートに書き出すか。
+    //  ★2026-10-09 発注者指示により false。
+    //    全ルールが清掃ボードの A列・D列のメモに出るようになったので、
+    //    シートを見に行く必要がなくなった。
+    //    false のあいだシートは作り直されないので、手で消せばそのまま。
+    //    検査そのものは走り続ける (メモがここの結果を使う)。
+    WRITE_SHEET: false,
+
     DAYS_BACK:  3,
     DAYS_AHEAD: 60,
     RULES: {
@@ -124,15 +133,33 @@ const CONFIG = {
     MAX_CELLS_PER_RUN: 300,
 
     //  どのルールを、どの列に、どの文面で出すか。
-    //  ★2026-10-09 発注者指示により、出すのはこの3つだけ。
-    //    指摘事項シートには全ルールが載るが、メモはここに絞る。
-    //    ここに無いルール (kindMissing / cleanerMissing / unknownStaff /
-    //    LatestOptions 系) はメモにしない。
+    //
+    //  ★2026-10-09: はじめは下の3つ (cleanGap / setsMismatch /
+    //    nightMissing) だけだったが、残りがシートにしか出ないせいで
+    //    指摘事項シートを消せなかった。全ルールをここに出して
+    //    シートを不要にした。
+    //
+    //  ★メモを出すのは A列 と D列 だけにしてある。
+    //    E〜T列は毎バッチで clearContent される列で、将来 clearNote を
+    //    足されると消える。A列・D列は GAS が触らないので安全。
+    //    LatestOptions の指摘も、その日の同じ階の行の D列に出す
+    //    (見る場所を1つにするため)。
+    //
     //  col: 1 = A列 清掃担当 / 4 = D列 接客担当
     RULES: {
-      cleanGap:     { col: 1, text: '次の宿泊のための清掃スタッフがアサインされていません' },
-      setsMismatch: { col: 1, text: '次の宿泊のために用意するベッド数が違います' },
-      nightMissing: { col: 4, text: '次の部屋貸しに対応する接客スタッフがアサインされていません' },
+      //  ── A列 清掃まわり ──
+      cleanGap:          { col: 1, text: '次の宿泊のための清掃スタッフがアサインされていません' },
+      setsMismatch:      { col: 1, text: '次の宿泊のために用意するベッド数が違います' },
+      kindMissing:       { col: 1, text: '清掃の種類が入っていません' },
+      cleanerMissing:    { col: 1, text: '清掃の種類は決まっていますが、担当者が入っていません' },
+      'unknownStaff.清掃': { col: 1, text: 'この清掃担当者名が Staff シートにありません' },
+
+      //  ── D列 接客・食事まわり ──
+      nightMissing:      { col: 4, text: '次の部屋貸しに対応する接客スタッフがアサインされていません' },
+      'unknownStaff.接客': { col: 4, text: 'この接客担当者名が Staff シートにありません' },
+      orderedButGone:    { col: 4, text: '予約が無くなったのに、ほなみやへ転記済みになっています' },
+      mealNoStay:        { col: 4, text: '食事の予約がありますが、この日に宿泊者がいません' },
+      guestsMissing:     { col: 4, text: '食事予約の人数が入っていません' },
     },
   },
 

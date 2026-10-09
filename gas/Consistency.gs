@@ -39,6 +39,18 @@ function checkConsistency() {
   }
 
   const issues = collectIssues();
+
+  //  ★指摘事項シートへの書き出しは切れる。
+  //    全ルールが清掃ボードのメモに出るので、シートは無くてもよい。
+  //    切っても検査は走る (メモがこの結果を使う)。
+  //    ここで ensureIssueSheet を呼ばないことが大事で、呼ぶと
+  //    手で消したシートが毎時作り直されてしまう。
+  if (K.WRITE_SHEET === false) {
+    dlog(`矛盾チェック: ${issues.length}件検出 (指摘事項シートへの書き出しは無効)`);
+    return { found: issues.length, added: 0, revived: 0, deleted: 0,
+             active: issues.length, issues: issues };
+  }
+
   const r = syncIssues(issues);
 
   dlog(`矛盾チェック: ${issues.length}件検出 / ` +
@@ -102,6 +114,8 @@ function collectIssues() {
   const byRoom = {};        // 階 → 日付順の行
   const occupied = {};      // その夜に宿泊者がいる (日付|階)
   const covered  = {};      // 清掃ボードが行を持つ日付
+  const houseDay = {};      // 一棟貸しの日
+  const cleanedDay = {};    // どこかの階に清掃担当が入っている日
 
   board.forEach(row => {
     const d = fmtDate(row[C.DATE - 1]);
@@ -132,7 +146,11 @@ function collectIssues() {
       sets:  numOrZero(row[C.SET_GUESTS - 1]),
       ppl:   numOrZero(row[C.GUESTS - 1]),
       guest: String(row[C.GUEST_NAME - 1] || '').trim(),
+      //  一棟貸しの日かどうか。House.gs が K列に '一棟按分' を書く。
+      house: String(row[C.GUESTS_SRC - 1] || '').indexOf('一棟按分') >= 0,
     };
+    if (item.house) houseDay[d] = true;
+    if (item.clean) cleanedDay[d] = true;
     (byRoom[room] = byRoom[room] || []).push(item);
   });
   Object.keys(byRoom).forEach(r =>
@@ -145,11 +163,25 @@ function collectIssues() {
       let prevOut = -1;                       // 直前にチェックアウトがあった位置
 
       list.forEach((it, i) => {
+        const isOut = it.state.indexOf('OUT') >= 0;
+
         if (ARRIVE.indexOf(it.state) >= 0) {
+          //  ★その行自体が退室日 (OUT→IN) なら、窓はその日1日だけ。
+          //    前の退室まで遡ってはいけない。遡ると、前の客のために
+          //    やった清掃を数えてしまい、
+          //      ・OUT→IN が続く日は、前日に担当がいるだけで
+          //        当日が空欄でも指摘されない
+          //      ・指摘が1日遅れて次の日に出る
+          //    という形で抜ける。実データ 2026-10-29〜11-05 で確認。
+          const start = isOut ? i : prevOut;
+
           // 直前の退室が分からない場合は判定しない (データの先頭など)
-          if (prevOut >= 0 && it.date >= from && it.date <= to) {
-            const win = list.slice(prevOut, i + 1);
-            const cleaned = win.some(x => x.clean);
+          if (start >= 0 && it.date >= from && it.date <= to) {
+            const win = list.slice(start, i + 1);
+            //  一棟貸しの日は1組の客を2行に展開したもの。清掃担当は
+            //  どちらか一方の行にだけ書かれるので、日で見る。
+            const cleaned = win.some(x => x.clean)
+              || (houseDay[it.date] && cleanedDay[it.date]);
             if (!cleaned) {
               const span = (win.length === 1)
                 ? it.date
@@ -159,7 +191,7 @@ function collectIssues() {
             }
           }
         }
-        if (it.state.indexOf('OUT') >= 0) prevOut = i;
+        if (isOut) prevOut = i;
       });
     });
   }
@@ -178,7 +210,11 @@ function collectIssues() {
         add(it.key, 'cleanerMissing', 'CleaningBoard', it.date, room,
           `種類が「${it.kind}」なのに清掃担当が空欄`);
       }
-      if (on('nightMissing') && ARRIVE.indexOf(it.state) >= 0 && it.nightBlank) {
+      //  ★一棟貸しは「無人の一棟貸し」。接客が付かないのが前提なので
+      //    接客担当が空欄でも指摘しない (2026-10-09 発注者指示)。
+      //    指摘しているのは部屋貸しの到着日だけ。
+      if (on('nightMissing') && ARRIVE.indexOf(it.state) >= 0
+          && it.nightBlank && !it.house) {
         add(it.key, 'nightMissing', 'CleaningBoard', it.date, room, '到着日なのに接客担当が空欄');
       }
       if (on('setsMismatch') && it.sets > 0 && it.ppl > 0 && it.sets !== it.ppl) {

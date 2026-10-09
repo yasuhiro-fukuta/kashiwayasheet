@@ -99,8 +99,11 @@ function annotateBoardNotes(issues, dryRun) {
   list.forEach(it => {
     const m = boardNoteRuleOf_(it);
     if (!m) return;                       // メモにしないルール
+    //  清掃ボードの指摘は pk の前半が E列のキーそのもの。
+    //  LatestOptions の指摘は pk が 'yyyy-MM-dd_1F_氏名@送信日時' なので
+    //  引けない。その場合は (日付, 階) から同じ形のキーを作って引く。
     const rowKey = String(it.pk || '').split('#')[0];
-    const row = rowOf[rowKey];
+    const row = rowOf[rowKey] || rowOf[`${it.date}_${it.room}`];
     if (!row) { res.unplaced.push(it); return; }
     const k = `${row},${m.col}`;
     if (!want[k]) want[k] = [];
@@ -143,9 +146,11 @@ function annotateBoardNotes(issues, dryRun) {
 function boardNoteRuleOf_(issue) {
   const B = CONFIG.BOARD_NOTE || {};
   const R = B.RULES || {};
-  if (String(issue.sheet || '') !== CONFIG.SHEET.CLEANING) return null;
-  //  pk = 'yyyy-MM-dd_1F#ruleId'。ruleId に '.' が入ることがある
-  //  (unknownStaff.清掃) が、そのルールはメモにしないので影響しない。
+  //  pk = '元行のキー#ruleId'。ruleId に '.' が入ることがある
+  //  (unknownStaff.清掃)。RULES のキーもその形で持たせてある。
+  //  ★どのシートの指摘でも、出す先は清掃ボードの A列・D列。
+  //    見る場所を1つにするため、LatestOptions の指摘も
+  //    その日の同じ階の行に出す。
   const ruleId = String(issue.pk || '').split('#')[1] || '';
   return R[ruleId] || null;
 }
