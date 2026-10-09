@@ -96,6 +96,7 @@
 | `CheckinForm.gs` | 370 | 宿泊者名簿フォームの取込と未提出の赤字 |
 | `Staff.gs` | 132 | 担当者一覧（Staff シート）の自動生成 |
 | `Consistency.gs` | 395 | 手動入力の矛盾を「指摘事項」シートへ |
+| `BoardNote.gs` | 229 | 指摘を清掃ボード A列・D列のメモで出す |
 | `Payroll.gs` | 2305 | 給与計算 + 注文確認票の読み取り・突合 |
 | `OrderExport.gs` | 284 | 注文確認票への一覧転記 |
 | `OrderAnnotate.gs` | 379 | 注文確認票へ「直す所」をメモで注記 |
@@ -233,6 +234,7 @@
  4. setupStaffSheet()                          担当者一覧の更新（追記のみ）
  5. buildCleaningBoard()                       清掃予定表の再生成
  6. checkConsistency()                         手動入力の矛盾 → 指摘事項
+ 6b.  annotateBoardNotesFromBatch()            指摘 → 清掃ボード A・D列のメモ
  7. syncOptionBookings()                       オプション予約 → カレンダー
  8. exportOrdersToHonamiya()                   注文確認票へ一覧を転記
  9. annotateOrderSheetFromBatch()              注文確認票へ「直す所」をメモ
@@ -857,6 +859,33 @@ NO_PAY_NAMES: ['や']
 運用に合わないルールが出てきたら、**コードではなく `CONFIG.ISSUE_CHECK.RULES`** を
 `false` にします。
 
+### 11.4 清掃ボードへのメモ出し（`BoardNote.gs`）
+
+指摘事項シートを見に行かなくても済むよう、指摘を**清掃ボードの A列・D列の
+セルのメモ**として出します（2026-10-09 発注者指示）。
+
+| ルール | 列 | 文面 |
+|---|---|---|
+| `cleanGap` | A | 次の宿泊のための清掃スタッフがアサインされていません |
+| `setsMismatch` | A | 次の宿泊のために用意するベッド数が違います |
+| `nightMissing` | D | 次の部屋貸しに対応する接客スタッフがアサインされていません |
+
+**メモに出すのはこの3つだけです。**
+指摘事項シートには全ルールが載りますが、メモは `CONFIG.BOARD_NOTE.RULES` に絞ります。
+ここに無いルール（`kindMissing` / `cleanerMissing` / `unknownStaff` / LatestOptions 系）は
+メモにしません。
+
+| | |
+|---|---|
+| 値は書き換えない | `Range.setNote` だけ。A列・D列は人の領域 |
+| コメントではなくメモ | 返信の付くスレッドは `SpreadsheetApp` では作れない |
+| 人のメモは消さない | `MARKER` より後ろだけ入れ替える |
+| 解消したら消える | 毎回ボードの全行を見て作り直すので、直った行・対象期間から外れた行のメモは自動で消える |
+| 同じ行の複数指摘 | 1つのメモにまとめる |
+| 行の特定 | E列（キー）→ 行番号の対応表で引く。行の並び順には頼らない |
+| 判定の出どころ | `collectIssues()`（`Consistency.gs`）。別に判定すると指摘事項シートとメモで違うことを言い出す |
+| 上限 | 1回300セル |
+
 ---
 
 ## 12. Web API（チャットボット向け）
@@ -900,6 +929,7 @@ NO_PAY_NAMES: ['や']
 | `CHECKIN_FORM` / `CHECKIN_FORM_ALERT` | 宿泊者名簿フォームの場所と未提出の赤字 |
 | `MEALS` | 食事設問 → サマリ表示名の対応表 |
 | `ISSUE_CHECK` | 矛盾チェックの期間とルールの on/off |
+| `BOARD_NOTE` | 清掃ボード A・D列へのメモ出し。出す指摘の絞り込み |
 | `STAFF` | 担当者として扱わない値 |
 | `PAYROLL` | 給与計算のすべて（下記） |
 | `ORDER_EXPORT` | 注文確認票への一覧転記 |
@@ -959,6 +989,9 @@ NO_PAY_NAMES: ['や']
 | 👥 食事表の人数だけ補完 | `runGuestBackfillOnly` |
 | 👤 担当者一覧を更新 | `runStaffSetupOnly` |
 | 🔎 手動列の矛盾チェック | `runConsistencyCheckOnly` |
+| 📝 清掃ボードに指摘をメモで書く | `runBoardNoteOnly` |
+| 🔍 書くメモを確認 (清掃ボード・書込なし) | `previewBoardNotes` |
+| 🧽 清掃ボードの自動メモを消す | `clearBoardNotes` |
 
 ### 14.2 診断（すべて書き込みなし）
 
@@ -1083,7 +1116,7 @@ Node の `vm` モジュールで `SpreadsheetApp` / `Utilities` / `Logger` /
 
 | 場所 | 理由 |
 |---|---|
-| `CleaningBoard` A〜D列 | 人の領域。清掃・接客の当番表 |
+| `CleaningBoard` A〜D列 | 人の領域。清掃・接客の当番表。**値は書かない**（A・D列には指摘のメモだけ書く） |
 | `CleaningBoard` U〜X列 | 人の領域。達成率・やり直し・半日・特別清掃箇所 |
 | `LatestOptions` M列（曜日） | 手動の `WEEKDAY` 数式。**並べ替えもしない** |
 | `LodgifyBookings` S列（備考） | 手書き |
@@ -1099,6 +1132,7 @@ Node の `vm` モジュールで `SpreadsheetApp` / `Utilities` / `Logger` /
 |---|---|
 | `CONFIG.CLEANING.START_DATE` = `2026-08-01` | 変えると全行がずれ、手動入力が全部別の日に付く |
 | `CONFIG.ORDER_ANNOTATE.MARKER` | 変えると古い注記を消せなくなる |
+| `CONFIG.BOARD_NOTE.MARKER` | 同じ理由 |
 | 担当者名の表記 | 突合は完全一致。`ゆうｻﾝ` → `ゆうサン` にすると1件も拾えない |
 
 ### 16.3 タイムゾーンが食い違っている

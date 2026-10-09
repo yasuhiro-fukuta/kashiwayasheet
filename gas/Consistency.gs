@@ -35,7 +35,7 @@ function checkConsistency() {
   const K = CONFIG.ISSUE_CHECK || {};
   if (K.ENABLED === false) {
     dlog('矛盾チェックは無効 (CONFIG.ISSUE_CHECK.ENABLED = false)');
-    return { found: 0, added: 0 };
+    return { found: 0, added: 0, issues: [] };
   }
 
   const issues = collectIssues();
@@ -43,8 +43,11 @@ function checkConsistency() {
 
   dlog(`矛盾チェック: ${issues.length}件検出 / ` +
        `新規${r.added} 復活${r.revived} 解消${r.deleted} / いま有効${r.active}`);
+  //  ★issues も返す。清掃ボードへのメモ (BoardNote.gs) が
+  //    同じ判定結果を使えるようにするため。別に判定させると、
+  //    指摘事項シートとメモで違うことを言い出す。
   return { found: issues.length, added: r.added, revived: r.revived,
-           deleted: r.deleted, active: r.active };
+           deleted: r.deleted, active: r.active, issues: issues };
 }
 
 /**

@@ -65,6 +65,16 @@ function runBatch() {
     try {
       const ck = checkConsistency();
       dlog(`矛盾チェック: ${ck.found}件検出 / ${ck.added}件を新規追記`);
+
+      // ── 清掃ボードの A列・D列にメモで出す (v2.29) ──────────
+      // 値は書き換えず、メモだけを入れ替える。人のメモは残す。
+      // ck.issues を渡してボードを2回読まないようにしている。
+      try {
+        const bn = annotateBoardNotesFromBatch(ck.issues);
+        dlog(formatBoardNoteResult_(bn));
+      } catch (e) {
+        Logger.log(`清掃ボードへのメモに失敗 (処理は続行): ${e.stack || e}`);
+      }
     } catch (e) {
       Logger.log(`矛盾チェックに失敗 (処理は続行): ${e.stack || e}`);
     }
@@ -362,6 +372,9 @@ function onOpen() {
     .addItem('🔍 Check-In Form 読み込み確認',        'dumpCheckinForm')
     .addItem('👤 担当者一覧を更新 (Staff)',           'runStaffSetupOnly')
     .addItem('🔎 手動列の矛盾チェック (指摘事項)',      'runConsistencyCheckOnly')
+    .addItem('📝 清掃ボードに指摘をメモで書く',         'runBoardNoteOnly')
+    .addItem('🔍 書くメモを確認 (清掃ボード・書込なし)', 'previewBoardNotes')
+    .addItem('🧽 清掃ボードの自動メモを消す',           'clearBoardNotes')
     .addItem('❓ E列が赤い理由を調べる',              'explainRedKeys')
     .addItem('🔍 Lodgify レスポンス確認',            'dumpLodgifyBookings')
     .addItem('🍱 Lodgify アドオン確認',              'dumpLodgifyAddons')

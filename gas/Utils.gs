@@ -263,3 +263,18 @@ function numOrZero(v) {
   const n = Number(toHalfWidth(v).replace(/[^0-9.\-]/g, ''));
   return isNaN(n) ? 0 : n;
 }
+
+/**
+ * 列番号 → 列名 ('A' 'B' ... 'AA')。ログにセル位置を出すのに使う。
+ *  ★メモを書く処理 (OrderAnnotate / BoardNote) が両方使うので
+ *    どちらかのファイルではなくここに置く。
+ */
+function columnLetter_(col) {
+  let n = Number(col), s = '';
+  while (n > 0) {
+    const r = (n - 1) % 26;
+    s = String.fromCharCode(65 + r) + s;
+    n = Math.floor((n - 1) / 26);
+  }
+  return s;
+}

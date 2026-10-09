@@ -243,17 +243,6 @@ function capNote_(s) {
   return (t.length <= max) ? t : t.slice(0, max - 3) + '...';
 }
 
-/** 列番号 → 'A' 'B' ... 'AA'。 */
-function columnLetter_(col) {
-  let n = Number(col), s = '';
-  while (n > 0) {
-    const r = (n - 1) % 26;
-    s = String.fromCharCode(65 + r) + s;
-    n = Math.floor((n - 1) / 26);
-  }
-  return s;
-}
-
 // ── 文面 ────────────────────────────────────────────────────
 
 /**
