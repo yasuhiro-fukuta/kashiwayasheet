@@ -852,7 +852,7 @@ NO_PAY_NAMES: ['や']
 | `nightMissing` | 到着日なのに接客担当が空欄。**一棟貸しは除く**（無人の一棟貸しなので接客が付かない） |
 | `setsMismatch` | べ（C列）と 泊人（F列）が不一致 |
 | `unknownStaff` | 担当者名が `Staff` シートに無い |
-| `orderedButGone` | 予約が消えたのに ほなみや転記済 = 済 |
+| `orderedButGone` | 予約が消えたのに ほなみや転記済 = 済。**過去日は除く**（過去の宿泊は必ず iCal から落ちるため）。清掃ボードには出さず、注文確認票の ⑤ 取消 で出す |
 | `mealNoStay` | 食事予約があるが在室が無い |
 | `guestsMissing` | 人数が空欄 |
 
@@ -873,7 +873,6 @@ NO_PAY_NAMES: ['や']
 | `unknownStaff.清掃` | A | この清掃担当者名が Staff シートにありません |
 | `nightMissing` | D | 次の部屋貸しに対応する接客スタッフがアサインされていません |
 | `unknownStaff.接客` | D | この接客担当者名が Staff シートにありません |
-| `orderedButGone` | D | 予約が無くなったのに、ほなみやへ転記済みになっています |
 | `mealNoStay` | D | 食事の予約がありますが、この日に宿泊者がいません |
 | `guestsMissing` | D | 食事予約の人数が入っていません |
 
