@@ -142,6 +142,22 @@ function dmDateOf_(v) {
   return `${m[1]}-${('0' + m[2]).slice(-2)}-${('0' + m[3]).slice(-2)}`;
 }
 
+/**
+ * DMシートに有効か取消の行がある (日付|部屋) の一覧。
+ *  ここは「DMが正」なので、食事予約表からの注記は出さない
+ *  (2026-10-16、予約表由来のメモがDMと逆の指示を出していた)。
+ */
+function dmOwnedKeys_(dmRows, today) {
+  const D = CONFIG.DM_ORDERS;
+  const keys = {};
+  (dmRows || []).forEach(d => {
+    if (d.date < today) return;
+    if (d.status !== D.STATUS_ACTIVE && d.status !== D.STATUS_CANCEL) return;
+    keys[`${d.date}|${d.room}`] = true;
+  });
+  return keys;
+}
+
 /** その (日付|部屋) に有効なDM注文があるか。 */
 function dmCoversKey_(dmRows, key) {
   const A = CONFIG.DM_ORDERS.STATUS_ACTIVE;
@@ -194,18 +210,21 @@ function buildDmOrderMessages_(entries, dmRows, today) {
     const L = [];
     Object.keys(want).sort().forEach(lb => {
       const have = sheet[lb] || 0;
-      if (have >= want[lb]) return;
-      L.push(`   ・${lb}  DM ${want[lb]}名 / この表 ${have}名  (${want[lb] - have}名 不足)`);
-      L.push(`       →  ${portionsToSetText_(lb, want[lb])} にしてください`);
+      if (have < want[lb]) {
+        L.push(`   ・${lb}  DM ${want[lb]}名 / この表 ${have}名  (${want[lb] - have}名 不足)`);
+        L.push(`       →  ${portionsToSetText_(lb, want[lb])} にしてください`);
+      } else if (have > want[lb]) {
+        //  DMが正なので、多すぎる分も直してもらう
+        L.push(`   ・${lb}  DM ${want[lb]}名 / この表 ${have}名  (${have - want[lb]}名 多い)`);
+        L.push(`       →  ${portionsToSetText_(lb, want[lb])} に減らしてください`);
+      }
     });
     Object.keys(cancel).sort().forEach(lb => {
+      if (want[lb]) return;   // 有効な行がある品目は上で人数を見ている
       const have = sheet[lb] || 0;
-      const keep = want[lb] || 0;
-      if (have <= keep) return;
+      if (!have) return;
       L.push(`   ・${lb}  DMで取消済み / この表 ${have}名`);
-      L.push(keep
-        ? `       →  ${portionsToSetText_(lb, keep)} に減らしてください`
-        : '       →  この品目は外してください');
+      L.push('       →  この品目は外してください');
     });
     unknown.forEach(u => L.push(`   ・⚠品目か人数が読めません: ${u}`));
     if (!L.length) return;
