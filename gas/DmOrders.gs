@@ -48,9 +48,11 @@ function ensureDmOrderSheet_() {
   const D = CONFIG.DM_ORDERS;
   const ss = SpreadsheetApp.getActive();
   let sh = ss.getSheetByName(D.SHEET_NAME);
-  if (sh) return sh;
+  //  ★人が先に空のシートを作っていることがある (2026-10-16 実際にあった)。
+  //    空なら「無い」のと同じに扱って中身を入れる。何か書いてあれば触らない。
+  if (sh && sh.getLastRow() > 0) return sh;
 
-  sh = ss.insertSheet(D.SHEET_NAME);
+  if (!sh) sh = ss.insertSheet(D.SHEET_NAME);
   sh.getRange(1, 1).setValue(D.NOTICE).setFontColor('#b45309').setWrap(false);
   sh.getRange(2, 1, 1, D.HEADER.length).setValues([D.HEADER])
     .setFontWeight('bold').setBackground('#f3f4f6');
