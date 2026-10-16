@@ -110,6 +110,28 @@ function annotateBoardNotes(issues, dryRun) {
     if (want[k].indexOf(m.text) < 0) want[k].push(m.text);
   });
 
+  //  ── DMで受けた食事と食事欄の食い違い (D列) ──
+  //  食事欄の値は直さず、メモで知らせる (2026-10-16 社長方針)。
+  //  読めなくても他のメモは書く。
+  try {
+    const meals = sh.getRange(2, C.MEAL, last - 1, 1).getDisplayValues();
+    const mealOf = {};
+    keys.forEach((r, i) => {
+      const k = String(r[0] || '').trim();
+      if (k && !(k in mealOf)) mealOf[k] = String(meals[i][0] || '');
+    });
+    const dm = buildDmBoardNotes_(mealOf, readDmOrders_(), fmtDate(todayJst()));
+    Object.keys(dm).forEach(rowKey => {
+      const row = rowOf[rowKey];
+      if (!row) return;
+      const k = `${row},4`;
+      if (!want[k]) want[k] = [];
+      want[k].push(dm[rowKey]);
+    });
+  } catch (e) {
+    Logger.log(`清掃ボード: DM食事注文のメモを作れません (処理は続行): ${e.stack || e}`);
+  }
+
   //  ── 既にあるメモを読む (A列とD列をまとめて1回ずつ) ──
   const cols = boardNoteColumns_();
   const cur = {};
@@ -140,6 +162,63 @@ function annotateBoardNotes(issues, dryRun) {
 
   res.ok = true;
   return res;
+}
+
+/**
+ * 清掃ボードの食事欄と「DMからの食事注文」を比べ、食い違う行のメモ文を作る。
+ *  シートに触らないのでテストできる。
+ *  @param {Object<string,string>} mealOf  'yyyy-MM-dd_1F' → 食事欄の文字
+ *  @param {Array} dmRows  readDmOrders_()
+ *  @param {string} today  'yyyy-MM-dd'
+ *  @return {Object<string,string>}  'yyyy-MM-dd_1F' → メモ文
+ */
+function buildDmBoardNotes_(mealOf, dmRows, today) {
+  const D = CONFIG.DM_ORDERS;
+  const by = {};
+  (dmRows || []).forEach(d => {
+    if (d.date < today || !d.label) return;
+    if (d.status !== D.STATUS_ACTIVE && d.status !== D.STATUS_CANCEL) return;
+    const k = `${d.date}_${d.room}`;
+    if (!by[k]) by[k] = { want: {}, off: {}, item: {} };
+    const bag = d.status === D.STATUS_ACTIVE ? by[k].want : by[k].off;
+    bag[d.label] = (bag[d.label] || 0) + (d.persons || 0);
+    by[k].item[d.label] = d.item;
+  });
+
+  const out = {};
+  Object.keys(by).forEach(k => {
+    const have = boardMealPortions_(mealOf[k] || '');
+    const v = by[k];
+    const L = [];
+    Object.keys(v.want).forEach(lb => {
+      const n = have[lb] || 0;
+      if (n !== v.want[lb]) L.push(`${v.item[lb]} ${v.want[lb]}人前を出す (食事欄は${n > 0 ? n + '人前' : n < 0 ? '人数不明' : 'なし'})`);
+    });
+    Object.keys(v.off).forEach(lb => {
+      if (v.want[lb]) return;
+      if (have[lb]) L.push(`${v.item[lb]}は出さない (DMで取消。食事欄にあり)`);
+    });
+    if (L.length) out[k] = `DMで受けた食事と食事欄が違います (DMが正):\n  ・${L.join('\n  ・')}`;
+  });
+  return out;
+}
+
+/** 食事欄の文字 → {ラベル: 人前}。'Chicken Hot Pot(4人前), Ochazuke Breakfast(2人前)' */
+function boardMealPortions_(text) {
+  const out = {};
+  String(text || '').split(/[,、\/]/).forEach(part => {
+    const m = toHalfWidth(part).match(/^\s*(.+?)\s*\(\s*(\d+(?:\.\d+)?)\s*人(?:前|用)\s*\)/);
+    if (!m) {
+      //  'Ochazuke Breakfast(Already included ... ¥0)' のように人数が無いもの
+      const lb0 = orderItemLabelOf_(String(part).replace(/\(.*$/, '')).label;
+      if (lb0 && !out[lb0]) out[lb0] = -1;   // あり・人数不明
+      return;
+    }
+    const lb = orderItemLabelOf_(m[1]).label;
+    if (!lb) return;
+    out[lb] = Math.max(out[lb] || 0, 0) + Number(m[2]);
+  });
+  return out;
 }
 
 /** 指摘1件 → {col, text}。メモにしないルールなら null。 */
