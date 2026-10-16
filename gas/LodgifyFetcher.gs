@@ -297,7 +297,7 @@ function normalizeLodgifyBooking(b, skipped) {
   }
 
   const guest  = b.guest || {};
-  const name   = guest.name || guest.Name || b.guest_name || '';
+  const name   = decodeHtmlEntities_(guest.name || guest.Name || b.guest_name || '');
   const src    = b.source_text || b.source || b.origin || '';
   const nights = Math.max(1, Math.round((checkout.getTime() - checkin.getTime()) / 86400000));
 
@@ -559,4 +559,19 @@ function trimRawJson_(raw) {
   if (max < 0) return '';
   if (max === 0 || s.length <= max) return s;
   return s.slice(0, max) + `…(全${s.length}字)`;
+}
+
+/**
+ * Lodgify の氏名に残る HTML 文字参照を戻す (例: "O&#39;Neill" → "O'Neill")。
+ * 名前は完全一致で突合するので、取り込み時に一度だけ戻しておく。
+ */
+function decodeHtmlEntities_(str) {
+  return String(str || '')
+    .replace(/&#(\d+);/g, (m, n) => String.fromCharCode(Number(n)))
+    .replace(/&#x([0-9a-f]+);/gi, (m, n) => String.fromCharCode(parseInt(n, 16)))
+    .replace(/&quot;/g, '"')
+    .replace(/&apos;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&');
 }
