@@ -432,6 +432,14 @@ function applyOptionsInfo(stays) {
 
     if (hit.name && !s.name) s.name = hit.name;
     if (hit.meal) s.meal = hit.meal;
+
+    // v2.30: 連泊の2泊目以降の日付で出された別の注文を控えておく。
+    //   ボードの食事欄は滞在に1つなので表示はしないが、警告に出す。
+    s.otherNightMeals = {};
+    for (let d = addDaysStr(s.checkin, 1); d < s.checkout; d = addDaysStr(d, 1)) {
+      const h = latest[`${d}|${s.room}`];
+      if (h && h !== hit && h.meal) s.otherNightMeals[d] = h.meal;
+    }
     if (hit.opt)   s.notes.push(hit.opt);
     if (hit.other) s.notes.push(hit.other);
 
@@ -639,6 +647,14 @@ function renderCleaningRows(stays) {
         }
       }
       if (staying.length > 1) notes.unshift('⚠同室に複数予約');
+
+      // v2.30: 連泊の食事は滞在全体で1つしか持たないため、2泊目以降の行にも
+      //   同じ注文が出る。二重仕込み・注文落ちを防ぐため、行ごとに確認を促す。
+      if (tonight && tonight.checkin !== dateStr && meal) {
+        notes.unshift('⚠連泊：食事は1泊目と同じ内容を表示中。今夜の分か要確認');
+      }
+      const other = tonight && tonight.otherNightMeals && tonight.otherNightMeals[dateStr];
+      if (other) notes.unshift(`⚠この日付の別注文あり（未表示）: ${other}`);
 
       const row = new Array(WIDTH).fill('');
       row[C.KEY - WS]          = `${dateStr}_${room}`;
