@@ -144,6 +144,7 @@ function annotateOneMonth_(month, opt) {
       dmRows = readDmOrders_().filter(d => d.date.slice(0, 7) === month);
     } catch (e) {
       res.reason = `DMからの食事注文を読めません (${e.message || e})`;
+      noteDmOrderError_(e);
     }
   }
 
@@ -188,8 +189,16 @@ function annotateOneSheet_(sh, month, optRows, today, opt, dmRows) {
     const audit = buildOrderSheetAudit(month, layout.entries, optRows, today);
     //  DMで受けた注文で説明がつく「表にしか無い行」は「?」を出さない
     audit.extraLive = audit.extraLive.filter(x => !dmCoversKey_(dmRows || [], x.key));
-    const msgs = buildAnnotateMessages_(month, audit)
-      .concat(buildDmOrderMessages_(layout.entries, dmRows || [], today));
+    let dmMsgs = [];
+    //  DM照合が失敗しても、フォーム側の注記は必ず書く
+    try {
+      dmMsgs = buildDmOrderMessages_(layout.entries, dmRows || [], today);
+      if (dmRows && dmRows.length) noteDmOrderError_(null);
+    } catch (e) {
+      Logger.log(`DM照合に失敗: ${e.stack || e}`);
+      noteDmOrderError_(e);
+    }
+    const msgs = buildAnnotateMessages_(month, audit).concat(dmMsgs);
     msgs.forEach(msg => {
       const cell = layout.dayCell[`${msg.date}|${msg.floor}`];
       if (!cell) { out.unplaced.push(msg); return; }
