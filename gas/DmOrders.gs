@@ -50,7 +50,7 @@ function ensureDmOrderSheet_() {
   let sh = ss.getSheetByName(D.SHEET_NAME);
   //  ★人が先に空のシートを作っていることがある (2026-10-16 実際にあった)。
   //    空なら「無い」のと同じに扱って中身を入れる。何か書いてあれば触らない。
-  if (sh && sh.getLastRow() > 0) return sh;
+  if (sh && sh.getLastRow() > 0) { appendDmOrdersOnce_(sh); return sh; }
 
   if (!sh) sh = ss.insertSheet(D.SHEET_NAME);
 
@@ -79,6 +79,25 @@ function ensureDmOrderSheet_() {
     Logger.log(`DMからの食事注文: 書式の設定に失敗 (値は書けています): ${e.stack || e}`);
   }
   return sh;
+}
+
+/**
+ * シートができた後に見つかったDM注文を、1件につき1回だけ末尾に足す。
+ *  一度足した行は人が消しても足し直さない (id をスクリプトプロパティに記録)。
+ */
+function appendDmOrdersOnce_(sh) {
+  try {
+    const props = PropertiesService.getScriptProperties();
+    const D = CONFIG.DM_ORDERS;
+    DM_ORDER_APPEND_.forEach(a => {
+      const key = 'DM_APPEND_' + a.id;
+      if (props.getProperty(key)) return;
+      sh.getRange(sh.getLastRow() + 1, 1, 1, D.HEADER.length).setValues([a.row]);
+      props.setProperty(key, new Date().toISOString());
+    });
+  } catch (e) {
+    Logger.log(`DMからの食事注文: 追記に失敗: ${e.stack || e}`);
+  }
 }
 
 /** 最後の失敗をシートの右上 (L1) に残す。ログを見られない人にも分かるように。 */
@@ -235,6 +254,20 @@ function buildDmOrderMessages_(entries, dmRows, today) {
   });
   return out;
 }
+
+//  シートができた後に見つかったDM注文 (2026-10-16 Lodgify Inbox 全件の洗い出し)。
+//  id は一意にする (足したかどうかの記録に使う)。列は DM_ORDER_SEED_ と同じ。
+const DM_ORDER_APPEND_ = [
+  { id: '20261022-1F-Frewer-chicken',
+    row: ['2026/10/22', '1F', 'Lynda Frewer', '鶏鍋', 4, '', 'Lodgify', '2026/03/26', '有効',
+          '3/26 DMで受付・確定。予約は大人3名'] },
+  { id: '20261022-1F-Frewer-breakfast',
+    row: ['2026/10/22', '1F', 'Lynda Frewer', '朝食', 2, '', 'Lodgify', '2026/03/26', '有効',
+          '3/26 DMで受付・確定（10/23朝の分）'] },
+  { id: '20261021-2F-Wilhelmsen-vegan',
+    row: ['2026/10/21', '2F', 'Joan Wilhelmsen', 'ビーガン鍋', 4, '', 'Lodgify', '2026/09/27', '未確定',
+          '9/27 DMで4名16,000円で可と回答。ペスカタリアン3名分は未回答。フォーム締切10/18'] },
+];
 
 //  シートを作るときに1回だけ入れる内容 (2026-10-16 の洗い出し結果)。
 //  ★作った後はシートが正。ここを直してもシートには反映されない。
