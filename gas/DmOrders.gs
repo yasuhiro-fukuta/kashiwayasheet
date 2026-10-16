@@ -53,28 +53,43 @@ function ensureDmOrderSheet_() {
   if (sh && sh.getLastRow() > 0) return sh;
 
   if (!sh) sh = ss.insertSheet(D.SHEET_NAME);
-  sh.getRange(1, 1).setValue(D.NOTICE).setFontColor('#b45309').setWrap(false);
-  sh.getRange(2, 1, 1, D.HEADER.length).setValues([D.HEADER])
-    .setFontWeight('bold').setBackground('#f3f4f6');
-  sh.setFrozenRows(2);
 
+  //  ★値を先に一度で書き、すぐ確定させる。書式やプルダウンで失敗しても
+  //    注文の行だけは必ず残るようにする (2026-10-16 シートが空のまま残った)。
   const seed = DM_ORDER_SEED_;
-  if (seed.length) {
-    sh.getRange(3, 1, seed.length, D.HEADER.length).setValues(seed);
+  const blank = D.HEADER.map(() => '');
+  const notice = blank.slice(); notice[0] = D.NOTICE;
+  sh.getRange(1, 1, 2 + seed.length, D.HEADER.length)
+    .setValues([notice, D.HEADER].concat(seed));
+  SpreadsheetApp.flush();
+
+  try {
+    sh.getRange(1, 1).setFontColor('#b45309');
+    sh.getRange(2, 1, 1, D.HEADER.length).setFontWeight('bold').setBackground('#f3f4f6');
+    sh.setFrozenRows(2);
+    const n = Math.max(seed.length, 1) + 200;
+    sh.getRange(3, 1, n, 1).setNumberFormat('yyyy/mm/dd');
+    //  状態・部屋は選ぶだけにする (書き間違いで突き合わせから外れないように)
+    sh.getRange(3, 9, n, 1).setDataValidation(SpreadsheetApp.newDataValidation()
+      .requireValueInList([D.STATUS_ACTIVE, D.STATUS_CANCEL, '未確定', '対応済'], true)
+      .setAllowInvalid(false).build());
+    sh.getRange(3, 2, n, 1).setDataValidation(SpreadsheetApp.newDataValidation()
+      .requireValueInList(CONFIG.CLEANING.ROOMS, true).setAllowInvalid(false).build());
+  } catch (e) {
+    Logger.log(`DMからの食事注文: 書式の設定に失敗 (値は書けています): ${e.stack || e}`);
   }
-  sh.getRange(3, 1, Math.max(seed.length, 1) + 200, 1).setNumberFormat('yyyy/mm/dd');
-
-  //  状態は選ぶだけにする (書き間違いで突き合わせから外れないように)
-  const rule = SpreadsheetApp.newDataValidation()
-    .requireValueInList([D.STATUS_ACTIVE, D.STATUS_CANCEL, '未確定', '対応済'], true)
-    .setAllowInvalid(false).build();
-  sh.getRange(3, 9, Math.max(seed.length, 1) + 200, 1).setDataValidation(rule);
-  const roomRule = SpreadsheetApp.newDataValidation()
-    .requireValueInList(CONFIG.CLEANING.ROOMS, true).setAllowInvalid(false).build();
-  sh.getRange(3, 2, Math.max(seed.length, 1) + 200, 1).setDataValidation(roomRule);
-
-  sh.autoResizeColumns(1, D.HEADER.length);
   return sh;
+}
+
+/** 最後の失敗をシートの右上 (L1) に残す。ログを見られない人にも分かるように。 */
+function noteDmOrderError_(e) {
+  try {
+    const sh = SpreadsheetApp.getActive().getSheetByName(CONFIG.DM_ORDERS.SHEET_NAME);
+    if (!sh) return;
+    sh.getRange(1, 12).setValue(e
+      ? `⚠ 照合エラー ${Utilities.formatDate(new Date(), CONFIG.TZ, 'MM/dd HH:mm')}: ${String(e.message || e).slice(0, 300)}`
+      : '');
+  } catch (ignore) { /* 書けなくてもバッチは止めない */ }
 }
 
 /**
