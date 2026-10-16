@@ -198,7 +198,11 @@ function annotateOneSheet_(sh, month, optRows, today, opt, dmRows) {
       Logger.log(`DM照合に失敗: ${e.stack || e}`);
       noteDmOrderError_(e);
     }
-    const msgs = buildAnnotateMessages_(month, audit).concat(dmMsgs);
+    //  DMの行がある日・部屋は DM照合のメモだけを出す (予約表由来の指示と矛盾させない)
+    const owned = dmOwnedKeys_(dmRows, today);
+    const msgs = buildAnnotateMessages_(month, audit)
+      .filter(m => !owned[`${m.date}|${m.floor}`])
+      .concat(dmMsgs);
     msgs.forEach(msg => {
       const cell = layout.dayCell[`${msg.date}|${msg.floor}`];
       if (!cell) { out.unplaced.push(msg); return; }
