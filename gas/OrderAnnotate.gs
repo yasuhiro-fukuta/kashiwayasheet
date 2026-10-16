@@ -136,8 +136,19 @@ function annotateOneMonth_(month, opt) {
   }
   const today = fmtDate(todayJst());
 
+  //  ── DMで受けた注文 (DmOrders.gs) ──
+  //  読めなくてもフォーム側の突合は続ける。
+  let dmRows = [];
+  if (!opt.clearOnly) {
+    try {
+      dmRows = readDmOrders_().filter(d => d.date.slice(0, 7) === month);
+    } catch (e) {
+      res.reason = `DMからの食事注文を読めません (${e.message || e})`;
+    }
+  }
+
   sheets.forEach(sh => {
-    const r = annotateOneSheet_(sh, month, optRows, today, opt);
+    const r = annotateOneSheet_(sh, month, optRows, today, opt, dmRows);
     res.written += r.written;
     res.cleared += r.cleared;
     r.unplaced.forEach(x => res.unplaced.push(x));
@@ -159,7 +170,7 @@ function annotateOneMonth_(month, opt) {
  *   ・1日ぶんの指摘をまとめて1つのメモに書ける
  *   ・品目セルに散らすと、品目が増減したとき古い注記が取り残される
  */
-function annotateOneSheet_(sh, month, optRows, today, opt) {
+function annotateOneSheet_(sh, month, optRows, today, opt, dmRows) {
   const A = CONFIG.ORDER_ANNOTATE;
   const out = { written: 0, cleared: 0, unplaced: [], notes: [] };
 
@@ -175,7 +186,11 @@ function annotateOneSheet_(sh, month, optRows, today, opt) {
   const want = {};   // 'row,col' → Array<string>
   if (!opt.clearOnly) {
     const audit = buildOrderSheetAudit(month, layout.entries, optRows, today);
-    buildAnnotateMessages_(month, audit).forEach(msg => {
+    //  DMで受けた注文で説明がつく「表にしか無い行」は「?」を出さない
+    audit.extraLive = audit.extraLive.filter(x => !dmCoversKey_(dmRows || [], x.key));
+    const msgs = buildAnnotateMessages_(month, audit)
+      .concat(buildDmOrderMessages_(layout.entries, dmRows || [], today));
+    msgs.forEach(msg => {
       const cell = layout.dayCell[`${msg.date}|${msg.floor}`];
       if (!cell) { out.unplaced.push(msg); return; }
       const k = `${cell.row},${cell.col}`;
