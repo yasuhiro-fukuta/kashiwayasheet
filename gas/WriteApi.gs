@@ -24,6 +24,11 @@
  *   option.setStatus  … 「オプション予約」の J列(状態) を変える
  *                        match: {date, kind, guest}  status: '確定' | '取消'
  *                        ★一致した行の J 列だけを書く。他の列は触らない。
+ *   board.setStaff    … CleaningBoard の A列(清掃担当)・D列(接客担当) を書く
+ *                        rows: [{date, room, day?, night?}]
+ *                        day/night を省略した列は触らない。'' は空にする。
+ *                        名前は Staff シートの名前(照合用) か '' のみ。
+ *                        ★A・D列以外は触らない (B・C は人が書く。E〜T は GAS)。
  *   batch.run         … 毎時バッチ (hourlySync) を今すぐ回す
  *   ping              … 疎通確認
  *
@@ -54,6 +59,7 @@ function doPost(e) {
       if (action === 'dmOrder.append') return jsonOut_(writeApiDmOrderAppend_(body.rows));
       if (action === 'option.append') return jsonOut_(writeApiOptionAppend_(body.rows));
       if (action === 'option.setStatus') return jsonOut_(writeApiOptionSetStatus_(body.match, body.status));
+      if (action === 'board.setStaff') return jsonOut_(writeApiBoardSetStaff_(body.rows));
     } finally {
       lock.releaseLock();
     }
@@ -171,6 +177,49 @@ function writeApiOptionSetStatus_(match, status) {
   });
   SpreadsheetApp.flush();
   return { ok: true, changed: changed.length, rows: changed };
+}
+
+function writeApiBoardSetStaff_(rows) {
+  const C = CONFIG.COL_CLEAN;
+  if (!Array.isArray(rows) || rows.length === 0) throw new Error('rows が空です');
+  if (rows.length > 200) throw new Error('rows は1回200行まで');
+
+  const staffSh = SpreadsheetApp.getActive().getSheetByName('Staff');
+  if (!staffSh) throw new Error('「Staff」シートがありません');
+  const names = staffSh.getLastRow() < 2 ? [] :
+    staffSh.getRange(2, 1, staffSh.getLastRow() - 1, 1).getDisplayValues()
+      .map(r => String(r[0] || '').trim()).filter(Boolean);
+  const checkName = (v, label) => {
+    const n = String(v).trim();
+    if (n && names.indexOf(n) < 0) throw new Error(`${label} は Staff シートに無い名前: "${n}"（${names.join('/')}）`);
+    return n;
+  };
+
+  const sh = ensureCleaningSheet();
+  const last = sh.getLastRow();
+  if (last < 2) throw new Error('CleaningBoard が空です');
+  const keys = sh.getRange(2, C.KEY, last - 1, 1).getDisplayValues().map(r => String(r[0] || '').trim());
+
+  //  先に全行を検証してから書く (途中で失敗して半端に書かれないように)
+  const plan = rows.map((r, i) => {
+    const date = requireDate_(r.date, `rows[${i}].date`);
+    const room = String(r.room || '').trim();
+    if (CONFIG.CLEANING.ROOMS.indexOf(room) < 0) throw new Error(`rows[${i}].room は ${CONFIG.CLEANING.ROOMS.join('/')} のどれか: "${room}"`);
+    const idx = keys.indexOf(`${date}_${room}`);
+    if (idx < 0) throw new Error(`rows[${i}] の行がボードにありません: ${date}_${room}`);
+    const p = { row: idx + 2 };
+    if (r.day !== undefined && r.day !== null) p.day = checkName(r.day, `rows[${i}].day`);
+    if (r.night !== undefined && r.night !== null) p.night = checkName(r.night, `rows[${i}].night`);
+    if (p.day === undefined && p.night === undefined) throw new Error(`rows[${i}] は day か night のどちらかが必要`);
+    return p;
+  });
+
+  plan.forEach(p => {
+    if (p.day !== undefined) sh.getRange(p.row, C.STAFF_DAY).setValue(p.day);
+    if (p.night !== undefined) sh.getRange(p.row, C.STAFF_NIGHT).setValue(p.night);
+  });
+  SpreadsheetApp.flush();
+  return { ok: true, sheet: 'CleaningBoard', rows: plan.length };
 }
 
 function writeApiRunBatch_() {
