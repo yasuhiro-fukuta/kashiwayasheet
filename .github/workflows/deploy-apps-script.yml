@@ -98,6 +98,22 @@ jobs:
       - name: Apps Script へ push
         run: clasp push -f
 
+      # push だけでは公開中のウェブアプリ (doGet / doPost) は古い版のまま。
+      # @HEAD 以外のデプロイを、いま push した内容の新しい版に差し替える。
+      - name: ウェブアプリを新しい版に更新
+        run: |
+          clasp list-deployments | tee deployments.txt
+          ids=$(grep -v '@HEAD' deployments.txt | grep -oE 'AKfyc[A-Za-z0-9_-]+' || true)
+          if [ -z "$ids" ]; then
+            echo "::warning::更新するウェブアプリのデプロイがありません"
+            exit 0
+          fi
+          for id in $ids; do
+            echo "redeploy $id"
+            clasp update-deployment "$id" -d "auto ${GITHUB_SHA::7}"
+            echo "URL: https://script.google.com/macros/s/$id/exec"
+          done
+
       - name: 後片付け
         if: always()
-        run: rm -f "$HOME/.clasprc.json" .clasp.json
+        run: rm -f "$HOME/.clasprc.json" .clasp.json deployments.txt
