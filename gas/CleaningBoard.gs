@@ -417,38 +417,71 @@ function applyOptionsInfo(stays) {
     v.other = v.others.join(' / ');
   });
 
+  //  ★食事は「夜ごと」に持つ (v2.20, 2026-10-20)。
+  //    LatestOptions は 宿泊日(=その食事を出す夜)×部屋 で1行なので、
+  //    滞在の各夜について、その夜の行だけを R列に出す。
+  //    以前は IN 日の行を滞在の全夜にコピーしていたため、連泊の
+  //    2泊目以降が LatestOptions と食い違っていた (Michael Mogan 10/20 等)。
+  //    その夜の行が無い夜は空欄にし、別の夜に注文があれば備考で知らせる。
   stays.forEach(s => {
-    let hit = latest[`${s.checkin}|${s.room}`];
+    s.mealByDate = s.mealByDate || {};
+    s.noteByDate = s.noteByDate || {};
+    const nights = stayNights_(s);
+    let first = null;
+    nights.forEach(d => {
+      const hit = latest[`${d}|${s.room}`];
+      if (!hit) return;
+      if (hit.meal) s.mealByDate[d] = hit.meal;
+      if (!first) first = hit;
+      if (hit.opt   && s.notes.indexOf(hit.opt)   < 0) s.notes.push(hit.opt);
+      if (hit.other && s.notes.indexOf(hit.other) < 0) s.notes.push(hit.other);
+    });
+    // 互換: s.meal は IN 日の夜の食事 (他の処理が参照する)
+    s.meal = s.mealByDate[s.checkin] || '';
 
-    // 連泊の中日でフォームが出されている場合の救済
-    if (!hit) {
-      let d = addDaysStr(s.checkin, 1);
-      while (d < s.checkout) {
-        if (latest[`${d}|${s.room}`]) { hit = latest[`${d}|${s.room}`]; break; }
-        d = addDaysStr(d, 1);
-      }
+    const mealDates = nights.filter(d => s.mealByDate[d]);
+    if (mealDates.length) {
+      nights.forEach(d => {
+        if (s.mealByDate[d]) return;
+        s.noteByDate[d] = `この夜の食事注文なし（注文があるのは ${mealDates.map(x => x.slice(5).replace('-', '/')).join('・')}）`;
+      });
     }
-    if (!hit) return;
 
-    if (hit.name && !s.name) s.name = hit.name;
-    if (hit.meal) s.meal = hit.meal;
-    if (hit.opt)   s.notes.push(hit.opt);
-    if (hit.other) s.notes.push(hit.other);
+    if (!first) return;
+    if (first.name && !s.name) s.name = first.name;
 
     // Lodgify で埋まっていなければフォームの人数を使う
-    if (!s.people && hit.people > 0) {
-      s.people = hit.people;
+    if (!s.people && first.people > 0) {
+      s.people = first.people;
       s.peopleSrc = 'フォーム';
     }
     // それでも駄目なら食事サマリから推定する
-    if (!s.people && hit.meal) {
-      const est = estimatePeopleFromMeal(hit.meal);
+    if (!s.people && first.meal) {
+      const est = estimatePeopleFromMeal(first.meal);
       if (est > 0) {
         s.people = est;
         s.peopleSrc = '食事推定';
       }
     }
   });
+}
+
+/**
+ * 滞在に含まれる「夜」の日付 (yyyy-MM-dd) を IN 日から順に返す。
+ * checkout が無い滞在は lastNight (無ければ IN 日) まで。
+ */
+function stayNights_(s) {
+  const out = [];
+  let d = s.checkin;
+  let guard = 0;
+  if (s.checkout) {
+    while (d < s.checkout && guard++ < 400) { out.push(d); d = addDaysStr(d, 1); }
+  } else {
+    const end = s.lastNight || s.checkin;
+    while (d <= end && guard++ < 400) { out.push(d); d = addDaysStr(d, 1); }
+  }
+  if (!out.length) out.push(s.checkin);
+  return out;
 }
 
 // ============================================================
@@ -489,18 +522,28 @@ function applyOverride(stays) {
   });
 
   stays.forEach(s => {
+    s.mealByDate = s.mealByDate || {};
+    s.noteByDate = s.noteByDate || {};
+    // 人数・名前・メモは IN 日の行で (従来どおり)
     const hit = map[`${s.checkin}|${s.room}`];
-    if (!hit) return;
-    if (hit.people > 0) {
-      s.people = hit.people;
-      s.peopleSrc = '手動';
+    if (hit) {
+      if (hit.people > 0) {
+        s.people = hit.people;
+        s.peopleSrc = '手動';
+      }
+      if (hit.name) s.name = hit.name;
+      if (hit.memo) s.notes.push(hit.memo);
     }
-    if (hit.name) s.name = hit.name;
-    if (hit.memo) s.notes.push(hit.memo);
-    if (hit.meal) {
-      s.meal = !s.meal ? hit.meal
-        : (s.meal.indexOf(hit.meal) >= 0 ? s.meal : s.meal + ' / ' + hit.meal);
-    }
+    // 食事(追記) は「その夜」の行に足す (宿泊日の列 = その食事を出す夜)
+    stayNights_(s).forEach(d => {
+      const h = map[`${d}|${s.room}`];
+      if (!h || !h.meal) return;
+      const cur = s.mealByDate[d] || '';
+      s.mealByDate[d] = !cur ? h.meal
+        : (cur.indexOf(h.meal) >= 0 ? cur : cur + ' / ' + h.meal);
+      delete s.noteByDate[d];
+    });
+    s.meal = s.mealByDate[s.checkin] || '';
   });
 }
 
@@ -632,8 +675,10 @@ function renderCleaningRows(stays) {
         guestName = tonight.name || '(氏名未取得)';
         source    = tonight.lodgifySource || tonight.source || '';
         nights    = tonight.nights || '';
-        meal      = tonight.meal || '';
+        //  食事は「その夜」の分だけ (v2.20)。IN 日の食事を連泊にコピーしない。
+        meal      = tonight.mealByDate ? (tonight.mealByDate[dateStr] || '') : (tonight.meal || '');
         if (tonight.notes) tonight.notes.forEach(n => { if (n) notes.push(n); });
+        if (tonight.noteByDate && tonight.noteByDate[dateStr]) notes.push(tonight.noteByDate[dateStr]);
         if (!tonight.people && !tonight.zeroOk) {
           notes.push('⚠人数不明 → CleaningOverride に記入');
         }
