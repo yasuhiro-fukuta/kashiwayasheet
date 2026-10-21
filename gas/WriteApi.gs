@@ -29,6 +29,13 @@
  *                        day/night を省略した列は触らない。'' は空にする。
  *                        名前は Staff シートの名前(照合用) か '' のみ。
  *                        ★A・D列以外は触らない (B・C は人が書く。E〜T は GAS)。
+ *   override.append   … 「CleaningOverride」に行を足す (人が書くシート。GAS は読むだけ)
+ *                        rows: [{date, room, people?, name?, memo?, meal?}]
+ *   cell.set          … 決まったセルに値を書く (社長決定の反映用。2026-10-21)
+ *                        file: 'master' | 'order'  (master=このブック、order=柏屋注文確認票)
+ *                        sheet: タブ名、cells: [{a1:'D47', value:'…'}]  ('' で空欄)
+ *                        ★書ける範囲は WRITE_API_CELL_RULES_ に限る
+ *                          (CleaningBoard の E〜T など GAS が書く列には書かない)。
  *   batch.run         … 毎時バッチ (hourlySync) を今すぐ回す
  *   ping              … 疎通確認
  *
@@ -60,6 +67,8 @@ function doPost(e) {
       if (action === 'option.append') return jsonOut_(writeApiOptionAppend_(body.rows));
       if (action === 'option.setStatus') return jsonOut_(writeApiOptionSetStatus_(body.match, body.status));
       if (action === 'board.setStaff') return jsonOut_(writeApiBoardSetStaff_(body.rows));
+      if (action === 'override.append') return jsonOut_(writeApiOverrideAppend_(body.rows));
+      if (action === 'cell.set') return jsonOut_(writeApiCellSet_(body.file, body.sheet, body.cells));
     } finally {
       lock.releaseLock();
     }
@@ -220,6 +229,80 @@ function writeApiBoardSetStaff_(rows) {
   });
   SpreadsheetApp.flush();
   return { ok: true, sheet: 'CleaningBoard', rows: plan.length };
+}
+
+function writeApiOverrideAppend_(rows) {
+  const C = CONFIG.COL_OVR;
+  requireRows_(rows);
+  const sh = ensureOverrideSheet();
+  const values = rows.map((r, i) => {
+    const date = requireDate_(r.date, `rows[${i}].date`);
+    const room = String(r.room || '').trim();
+    if (CONFIG.CLEANING.ROOMS.indexOf(room) < 0) throw new Error(`rows[${i}].room は ${CONFIG.CLEANING.ROOMS.join('/')} のどれか: "${room}"`);
+    const row = new Array(C.MEAL).fill('');
+    row[C.CHECKIN - 1]    = date;
+    row[C.ROOM - 1]       = room;
+    row[C.GUESTS - 1]     = (r.people === undefined || r.people === null || r.people === '') ? '' : Number(r.people);
+    row[C.GUEST_NAME - 1] = String(r.name || '').trim();
+    row[C.MEMO - 1]       = String(r.memo || '').trim();
+    row[C.MEAL - 1]       = String(r.meal || '').trim();
+    return row;
+  });
+  // 空行を探して書く (シートは1000行の空枠があるので getLastRow が正)
+  const start = Math.max(sh.getLastRow(), 1) + 1;
+  sh.getRange(start, C.CHECKIN, values.length, 1).setNumberFormat('@');
+  sh.getRange(start, 1, values.length, C.MEAL).setValues(values);
+  SpreadsheetApp.flush();
+  return { ok: true, sheet: CONFIG.SHEET.CLEAN_OVERRIDE, rows: values.length, firstRow: start };
+}
+
+//  cell.set で書いてよい場所。file → { id, sheets: { タブ名(正規表現) → 列(正規表現) } }
+//  ★GAS が毎時書き換える列 (CleaningBoard E〜T、LatestOptions の B 以外) は書かない。
+const WRITE_API_CELL_RULES_ = {
+  master: {
+    id: null,   // このブック
+    sheets: [
+      { sheet: /^CleaningBoard$/,   col: /^[A-DU-X]$/ },      // 手動列のみ
+      { sheet: /^LatestOptions$/,   col: /^B$/ },             // 論理削除フラグのみ
+      { sheet: /^CleaningOverride$/, col: /^[A-F]$/ },
+      { sheet: /^DMからの食事注文$/, col: /^[A-J]$/ },
+      { sheet: /^オプション予約$/,  col: /^[A-J]$/ },
+    ],
+  },
+  order: {
+    id: '1UHVicDOlgA597o7ahXYOgP0bNQnKan_1t7kc2VfkXqc',   // 柏屋注文確認票 (ほなみや共有)
+    sheets: [{ sheet: /^R\s*\d+\s*\S*月\s*$/, col: /^[A-Z]$/ }],
+  },
+};
+
+function writeApiCellSet_(file, sheetName, cells) {
+  const rule = WRITE_API_CELL_RULES_[String(file || '')];
+  if (!rule) throw new Error(`file は ${Object.keys(WRITE_API_CELL_RULES_).join('/')} のどれか`);
+  const name = String(sheetName || '');
+  if (!Array.isArray(cells) || !cells.length) throw new Error('cells が空です');
+  if (cells.length > 50) throw new Error('cells は1回50個まで');
+
+  const ss = rule.id ? SpreadsheetApp.openById(rule.id) : SpreadsheetApp.getActive();
+  //  タブ名は前後の空白ゆれがあるので、正規化して探す
+  const norm = x => String(x).normalize('NFKC').replace(/\s+/g, '');
+  const sh = ss.getSheets().find(s => norm(s.getName()) === norm(name)) || null;
+  if (!sh) throw new Error(`タブが見つかりません: "${name}"`);
+  const sheetRule = rule.sheets.find(r => r.sheet.test(norm(sh.getName())));
+  if (!sheetRule) throw new Error(`このタブには書けません: "${sh.getName()}"`);
+
+  //  先に全部検証してから書く
+  const plan = cells.map((c, i) => {
+    const a1 = String(c.a1 || '').trim().toUpperCase();
+    const m = /^([A-Z]{1,2})(\d+)$/.exec(a1);
+    if (!m) throw new Error(`cells[${i}].a1 が不正: "${a1}"`);
+    if (!sheetRule.col.test(m[1])) throw new Error(`cells[${i}] 列 ${m[1]} には書けません（GASが書く列）`);
+    if (Number(m[2]) < 2) throw new Error(`cells[${i}] 見出し行には書けません`);
+    return { a1, value: c.value === undefined || c.value === null ? '' : c.value };
+  });
+  const before = plan.map(p => ({ a1: p.a1, was: sh.getRange(p.a1).getDisplayValue() }));
+  plan.forEach(p => sh.getRange(p.a1).setValue(p.value));
+  SpreadsheetApp.flush();
+  return { ok: true, file: String(file), sheet: sh.getName(), written: plan.length, before: before };
 }
 
 function writeApiRunBatch_() {
