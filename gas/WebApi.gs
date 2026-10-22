@@ -60,6 +60,7 @@ function doGet(e) {
       today: Utilities.formatDate(new Date(), CONFIG.TZ, 'yyyy-MM-dd'),
       board: readCleaningBoardSlice_(),
       staff: readActiveStaff_(),
+      handover: readHandover_(),   // 清掃全体申し送り事項 (2026-10-22)
     });
   } catch (err) {
     return jsonOut_({ error: String(err && err.message || err) });
