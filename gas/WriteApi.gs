@@ -36,6 +36,7 @@
  *                        sheet: タブ名、cells: [{a1:'D47', value:'…'}]  ('' で空欄)
  *                        ★書ける範囲は WRITE_API_CELL_RULES_ に限る
  *                          (CleaningBoard の E〜T など GAS が書く列には書かない)。
+ *   handover.append   … 「清掃全体申し送り事項」に行を足す  rows: [{date, text, by?}]
  *   batch.run         … 毎時バッチ (hourlySync) を今すぐ回す
  *   ping              … 疎通確認
  *
@@ -68,6 +69,7 @@ function doPost(e) {
       if (action === 'option.setStatus') return jsonOut_(writeApiOptionSetStatus_(body.match, body.status));
       if (action === 'board.setStaff') return jsonOut_(writeApiBoardSetStaff_(body.rows));
       if (action === 'override.append') return jsonOut_(writeApiOverrideAppend_(body.rows));
+      if (action === 'handover.append') return jsonOut_(writeApiHandoverAppend_(body.rows));
       if (action === 'cell.set') return jsonOut_(writeApiCellSet_(body.file, body.sheet, body.cells));
     } finally {
       lock.releaseLock();
