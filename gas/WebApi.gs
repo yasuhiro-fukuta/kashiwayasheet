@@ -49,6 +49,13 @@ function doGet(e) {
   const part = e && e.parameter ? String(e.parameter.part || '') : '';
 
   try {
+    if (part === 'dmledger') {
+      // 座敷童（スタッフモード）用：DM台帳・お客様台帳・返信ルール（2026-10-24 旧台帳Docから移行）
+      return jsonOut_(Object.assign({
+        generatedAt: Utilities.formatDate(new Date(), CONFIG.TZ, 'yyyy-MM-dd HH:mm'),
+        today: Utilities.formatDate(new Date(), CONFIG.TZ, 'yyyy-MM-dd'),
+      }, readDmLedgerForBot_(e.parameter)));
+    }
     if (part === 'menu') {
       return jsonOut_({
         generatedAt: Utilities.formatDate(new Date(), CONFIG.TZ, 'yyyy-MM-dd HH:mm'),
