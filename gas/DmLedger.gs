@@ -77,6 +77,14 @@ function lastDataRow_(sh, width) {
   return 1;
 }
 
+/** 数字・日付・時刻・数式に見える値は ' を付けて文字列のまま入れる */
+function textify_(row) {
+  return row.map(v => {
+    const t = String(v === null || v === undefined ? '' : v);
+    return /^(\d|[=+\-@])/.test(t) ? "'" + t : t;
+  });
+}
+
 function normKey_(k) { return String(k || '').trim(); }
 function normText_(s) { return String(s || '').toLowerCase().replace(/[\s’'`]/g, ''); }
 
@@ -122,9 +130,16 @@ function writeApiDmAppend_(rows) {
   let first = null;
   if (out.length) {
     first = lastRow + 1;
-    const rng = sh.getRange(first, 1, out.length, W);
-    rng.setNumberFormat('@');
-    rng.setValues(out);
+    // 社長が作った「表_1」（テーブル）の中は列単位の書式変更ができないので、書式は触らず
+    // 日付・時刻など自動変換される値は先頭に ' を付けて文字列のまま入れる
+    const vals = out.map(textify_);
+    try {
+      sh.getRange(first, 1, out.length, W).setValues(vals);
+    } catch (e) {
+      // テーブルの範囲をまたぐ書き込みが断られたら、1行ずつ appendRow で足す
+      vals.forEach(v => sh.appendRow(v));
+      first = null;
+    }
   }
   // 返信したキーの「未返信」の受信行を「返信済み」に
   let closed = 0;
@@ -256,14 +271,14 @@ function writeApiGuestUpsert_(rows) {
     if (isNew) { newRows.push(row); idx[key] = -1; added++; }
     else {
       const rn = idx[key] + 2;
-      sh.getRange(rn, 1, 1, W).setNumberFormat('@').setValues([row]);
+      sh.getRange(rn, 1, 1, W).setValues([textify_(row)]);
       vals[idx[key]] = row;
       updated++;
     }
   });
   if (newRows.length) {
     const start = lastDataRow_(sh, W) + 1;
-    sh.getRange(start, 1, newRows.length, W).setNumberFormat('@').setValues(newRows);
+    sh.getRange(start, 1, newRows.length, W).setValues(newRows.map(textify_));
   }
   SpreadsheetApp.flush();
   return { ok: true, sheet: GUEST_SHEET_, added: added, updated: updated };
@@ -305,7 +320,7 @@ function writeApiRuleAppend_(rows) {
     return [String(r.kind || '返信方針').trim(), String(r.date || '').trim(), text, now];
   });
   const start = lastDataRow_(sh, RULE_HEADER_.length) + 1;
-  sh.getRange(start, 1, values.length, RULE_HEADER_.length).setNumberFormat('@').setValues(values);
+  sh.getRange(start, 1, values.length, RULE_HEADER_.length).setValues(values.map(textify_));
   SpreadsheetApp.flush();
   return { ok: true, sheet: RULE_SHEET_, rows: values.length, firstRow: start };
 }
