@@ -337,3 +337,54 @@ function writeApiRuleList_(q) {
   });
   return { ok: true, total: out.length, rows: out };
 }
+
+// ---------- 座敷童（読み取りAPI doGet ?part=dmledger）向け ----------
+/**
+ * お客様台帳（対応中・参考、と実施日が過去7日以内の終了）、返信ルール、
+ * DM台帳の直近 days 日（既定21日）の行を返す。読むだけ。
+ */
+function readDmLedgerForBot_(p) {
+  p = p || {};
+  const tz = CONFIG.TZ;
+  const today = Utilities.formatDate(new Date(), tz, 'yyyy-MM-dd');
+  const weekAgo = Utilities.formatDate(new Date(Date.now() - 7 * 86400000), tz, 'yyyy-MM-dd');
+  const days = Math.min(Number(p.days) || 21, 90);
+  const since = Utilities.formatDate(new Date(Date.now() - days * 86400000), tz, 'yyyy-MM-dd');
+  const ss = SpreadsheetApp.getActive();
+
+  const guests = [];
+  const gsh = ss.getSheetByName(GUEST_SHEET_);
+  if (gsh) sheetRows_(gsh, GUEST_HEADER_.length).forEach(r => {
+    if (!r[0]) return;
+    const st = r[GUEST_COL_['区分']];
+    const d = String(r[GUEST_COL_['実施日']] || '').slice(0, 10);
+    if (st === '終了' && !(d && d >= weekAgo)) return;
+    const o = {};
+    GUEST_HEADER_.forEach((h, j) => { if (h !== '更新日時') o[h] = r[j]; });
+    guests.push(o);
+  });
+  guests.sort((a, b) => String(a['実施日'] || '9999') < String(b['実施日'] || '9999') ? -1 : 1);
+
+  const rules = [];
+  const rsh = ss.getSheetByName(RULE_SHEET_);
+  if (rsh) sheetRows_(rsh, RULE_HEADER_.length).forEach(r => { if (r[2]) rules.push({ 区分: r[0], 内容: r[2] }); });
+
+  const dms = [];
+  const dsh = ss.getSheetByName(DM_SHEET_);
+  if (dsh) {
+    const last = lastDataRow_(dsh, DM_HEADER_.length);
+    if (last >= 2) dsh.getRange(2, 1, last - 1, DM_HEADER_.length).getDisplayValues().forEach(r => {
+      const d = r[DM_COL_['年月日']];
+      if (!d || d < since) return;
+      if (r[DM_COL_['状態']] === '対象外') return;
+      dms.push({
+        日時: d + ' ' + String(r[DM_COL_['時分秒']]).slice(0, 5),
+        名前: r[DM_COL_['対象の名前']], キー: r[DM_COL_['連絡先キー']], 媒体: r[DM_COL_['媒体']],
+        方向: r[DM_COL_['方向']], 状態: r[DM_COL_['状態']],
+        本文: String(r[DM_COL_['メッセージ全文']] || r[DM_COL_['メッセージ要約']]).slice(0, 600),
+      });
+    });
+    dms.sort((a, b) => a.日時 < b.日時 ? -1 : 1);
+  }
+  return { guests: guests, rules: rules, dms: dms, dmSince: since, today: today };
+}
