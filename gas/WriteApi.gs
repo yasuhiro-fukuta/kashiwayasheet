@@ -37,6 +37,9 @@
  *                        ★書ける範囲は WRITE_API_CELL_RULES_ に限る
  *                          (CleaningBoard の E〜T など GAS が書く列には書かない)。
  *   handover.append   … 「清掃全体申し送り事項」に行を足す  rows: [{date, text, by?}]
+ *   dm.append / dm.setStatus / dm.find          … DM台帳（DmLedger.gs。2026-10-24）
+ *   guest.upsert / guest.find                   … お客様台帳
+ *   rule.append / rule.list                     … 返信ルール（返信方針・前例など）
  *   batch.run         … 毎時バッチ (hourlySync) を今すぐ回す
  *   ping              … 疎通確認
  *
@@ -60,6 +63,10 @@ function doPost(e) {
   try {
     if (action === 'ping') return jsonOut_({ ok: true, now: nowJst_() });
     if (action === 'batch.run') return jsonOut_(writeApiRunBatch_());
+    // 読むだけ（ロック不要）
+    if (action === 'dm.find') return jsonOut_(writeApiDmFind_(body));
+    if (action === 'guest.find') return jsonOut_(writeApiGuestFind_(body));
+    if (action === 'rule.list') return jsonOut_(writeApiRuleList_(body));
 
     const lock = LockService.getScriptLock();
     if (!lock.tryLock(30 * 1000)) return jsonOut_({ ok: false, error: 'busy (バッチ実行中)。少し待って再送' });
@@ -70,6 +77,10 @@ function doPost(e) {
       if (action === 'board.setStaff') return jsonOut_(writeApiBoardSetStaff_(body.rows));
       if (action === 'override.append') return jsonOut_(writeApiOverrideAppend_(body.rows));
       if (action === 'handover.append') return jsonOut_(writeApiHandoverAppend_(body.rows));
+      if (action === 'dm.append') return jsonOut_(writeApiDmAppend_(body.rows));
+      if (action === 'dm.setStatus') return jsonOut_(writeApiDmSetStatus_(body.match, body.status));
+      if (action === 'guest.upsert') return jsonOut_(writeApiGuestUpsert_(body.rows));
+      if (action === 'rule.append') return jsonOut_(writeApiRuleAppend_(body.rows));
       if (action === 'cell.set') return jsonOut_(writeApiCellSet_(body.file, body.sheet, body.cells));
     } finally {
       lock.releaseLock();
