@@ -338,7 +338,7 @@ function writeApiRunBatch_() {
   if (h.error) res.error = `バッチが途中で失敗: ${h.error}`;
   //  オプション予約 → カレンダーの結果（v2.30。登録されない理由をここで見る）
   res.optionBooking = ob
-    ? { created: ob.created, updated: ob.updated, deleted: ob.deleted,
+    ? { created: ob.created, updated: ob.updated, deleted: ob.deleted, unchanged: ob.unchanged,
         errors: ob.errors || [], skippedReason: ob.ok ? '' : (ob.reason || '') }
     : null;
   return res;

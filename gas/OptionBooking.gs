@@ -77,7 +77,7 @@ function syncOptionBookings(now) {
   const C = CONFIG.COL_OPTBK;
   const rows = sh.getRange(2, 1, last - 1, CONFIG.OPTBK_WIDTH).getDisplayValues();
 
-  let created = 0, updated = 0, deleted = 0;
+  let created = 0, updated = 0, deleted = 0, unchanged = 0;
   const errors = [];
   const writes = [];   // [行番号, 登録日時, イベントID]
 
@@ -101,11 +101,17 @@ function syncOptionBookings(now) {
       if (spec.error) { errors.push(`${rowNo}行目: ${spec.error}`); return; }
 
       if (eventId) {
+        //  ★v2.30 終わった日の行は見に行かない（カレンダーの書き込み上限よけ）
+        if (isPastOptionSpec_(spec, now)) { unchanged++; return; }
         const ev = fetchOptionEvent_(cal, eventId);
         if (ev) {
-          ev.setTitle(spec.title);
-          ev.setDescription(spec.description);
-          applyOptionEventTime_(ev, spec);
+          //  ★v2.30 中身が同じなら書かない。毎時すべての確定行を書き直していたため
+          //    Google の「短時間に予定を作りすぎ/消しすぎ」の上限に当たり、
+          //    新しい行が登録されなくなった（2026-10-26）。
+          if (optionEventSame_(ev, spec)) { unchanged++; return; }
+          if (ev.getTitle() !== spec.title) ev.setTitle(spec.title);
+          if (String(ev.getDescription() || '') !== spec.description) ev.setDescription(spec.description);
+          if (!optionEventTimeSame_(ev, spec)) applyOptionEventTime_(ev, spec);
           updated++;
           writes.push([rowNo, fmtDateTime(now || nowJst()), eventId]);
           return;
@@ -133,7 +139,7 @@ function syncOptionBookings(now) {
   });
 
   return { ok: true, skipped: false, reason: '', created: created, updated: updated,
-           deleted: deleted, errors: errors,
+           deleted: deleted, unchanged: unchanged, errors: errors,
            calendar: cal.getName(), usingDefault: usingDefault };
 }
 
@@ -270,6 +276,31 @@ function fetchOptionEvent_(cal, eventId) {
   }
 }
 
+/** 予定の日時が spec と同じか。 */
+function optionEventTimeSame_(ev, spec) {
+  const near = (a, b) => Math.abs(a.getTime() - b.getTime()) < 60 * 1000;
+  if (spec.allDay) {
+    if (!ev.isAllDayEvent()) return false;
+    return near(ev.getAllDayStartDate(), spec.start) && near(ev.getAllDayEndDate(), spec.endExclusive);
+  }
+  if (ev.isAllDayEvent()) return false;
+  return near(ev.getStartTime(), spec.start) && near(ev.getEndTime(), spec.end);
+}
+
+/** 予定のタイトル・説明・日時がすべて spec と同じか。 */
+function optionEventSame_(ev, spec) {
+  return ev.getTitle() === spec.title
+    && String(ev.getDescription() || '') === spec.description
+    && optionEventTimeSame_(ev, spec);
+}
+
+/** 実施日が昨日より前の行か（終わった予定は書き直さない）。 */
+function isPastOptionSpec_(spec, now) {
+  const t = (now || nowJst()).getTime() - 2 * 86400000;
+  const endMs = spec.allDay ? spec.endExclusive.getTime() : spec.end.getTime();
+  return endMs < t;
+}
+
 /** 予定の日時を spec に合わせる。終日 ⇄ 時刻つき の入れ替えもここ。 */
 function applyOptionEventTime_(ev, spec) {
   if (spec.allDay) {
@@ -345,6 +376,7 @@ function ensureOptionBookingSheet() {
 function formatOptionBookingResult_(r) {
   if (!r.ok) return `オプション予約の反映をスキップ: ${r.reason}`;
   let s = `オプション予約: 登録${r.created} / 更新${r.updated} / 削除${r.deleted}`
+    + (r.unchanged != null ? ` / 変更なし${r.unchanged}` : '')
     + (r.calendar ? `  → カレンダー「${r.calendar}」` : '');
   if (r.usingDefault) {
     s += "\n  ※メインカレンダーに入れています。専用カレンダーに分けるなら"
