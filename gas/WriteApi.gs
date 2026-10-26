@@ -40,7 +40,10 @@
  *   dm.append / dm.setStatus / dm.find          … DM台帳（DmLedger.gs。2026-10-24）
  *   guest.upsert / guest.find                   … お客様台帳
  *   rule.append / rule.list                     … 返信ルール（返信方針・前例など）
+ *   cal.list / cal.delete / option.sync          … カレンダーを読む・消す（CalendarApi.gs。2026-10-26）
  *   batch.run         … 毎時バッチ (hourlySync) を今すぐ回す
+ *                        返り値に optionBooking {created, updated, deleted, errors, skippedReason}。
+ *                        別のバッチが実行中で回せなかったときは ok:false, error:'busy…'
  *   ping              … 疎通確認
  *
  *  返り値: { ok: true, ... } / { ok: false, error: '...' }
@@ -67,6 +70,7 @@ function doPost(e) {
     if (action === 'dm.find') return jsonOut_(writeApiDmFind_(body));
     if (action === 'guest.find') return jsonOut_(writeApiGuestFind_(body));
     if (action === 'rule.list') return jsonOut_(writeApiRuleList_(body));
+    if (action === 'cal.list') return jsonOut_(writeApiCalList_(body));
 
     const lock = LockService.getScriptLock();
     if (!lock.tryLock(30 * 1000)) return jsonOut_({ ok: false, error: 'busy (バッチ実行中)。少し待って再送' });
@@ -82,6 +86,8 @@ function doPost(e) {
       if (action === 'guest.upsert') return jsonOut_(writeApiGuestUpsert_(body.rows));
       if (action === 'rule.append') return jsonOut_(writeApiRuleAppend_(body.rows));
       if (action === 'cell.set') return jsonOut_(writeApiCellSet_(body.file, body.sheet, body.cells));
+      if (action === 'cal.delete') return jsonOut_(writeApiCalDelete_(body));
+      if (action === 'option.sync') return jsonOut_(writeApiOptionSync_());
     } finally {
       lock.releaseLock();
     }
@@ -320,6 +326,20 @@ function writeApiCellSet_(file, sheetName, cells) {
 
 function writeApiRunBatch_() {
   const t0 = Date.now();
-  hourlySync();
-  return { ok: true, ranAt: nowJst_(), seconds: Math.round((Date.now() - t0) / 1000) };
+  LAST_OPTION_BOOKING_RESULT_ = null;
+  const h = hourlySync() || {};
+  const ob = LAST_OPTION_BOOKING_RESULT_;
+  const res = {
+    ok: !h.skipped && !h.error,
+    ranAt: nowJst_(),
+    seconds: Math.round((Date.now() - t0) / 1000),
+  };
+  if (h.skipped) res.error = 'busy: 別のバッチが実行中で、今回は回していません。1〜2分おいて再送';
+  if (h.error) res.error = `バッチが途中で失敗: ${h.error}`;
+  //  オプション予約 → カレンダーの結果（v2.30。登録されない理由をここで見る）
+  res.optionBooking = ob
+    ? { created: ob.created, updated: ob.updated, deleted: ob.deleted,
+        errors: ob.errors || [], skippedReason: ob.ok ? '' : (ob.reason || '') }
+    : null;
+  return res;
 }

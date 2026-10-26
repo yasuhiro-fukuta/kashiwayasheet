@@ -83,6 +83,7 @@ function runBatch() {
     // カレンダー権限が無くてもバッチは止めない。
     try {
       const ob = syncOptionBookings(now);
+      LAST_OPTION_BOOKING_RESULT_ = ob;   // batch.run の返り値に載せる (v2.30)
       dlog(formatOptionBookingResult_(ob));
     } catch (e) {
       Logger.log(`オプション予約の反映に失敗 (処理は続行): ${e.stack || e}`);
@@ -121,17 +122,28 @@ function runBatch() {
  * ・LockService で多重実行を防止 (手動実行と重なった場合など)
  * ・失敗時はオーナーにメール通知 (無人運用のため沈黙させない)
  */
+//  同じ実行の中で、直近のオプション予約→カレンダーの結果を持っておく。
+//  batch.run (WriteApi.gs) がこれを返り値に載せる (v2.30)。
+var LAST_OPTION_BOOKING_RESULT_ = null;
+
+/**
+ * @return {{skipped: boolean, error: string}}
+ *   skipped … 別の実行がロックを持っていて、今回は何もしなかった
+ *   error   … runBatch が途中で落ちたときのエラー文
+ */
 function hourlySync() {
   const lock = LockService.getScriptLock();
   if (!lock.tryLock(30 * 1000)) {
     Logger.log('hourlySync SKIPPED: another execution is running.');
-    return;
+    return { skipped: true, error: '' };
   }
   try {
     runBatch();
+    return { skipped: false, error: '' };
   } catch (e) {
     Logger.log(`hourlySync ERROR: ${e.stack || e}`);
     notifyError('hourlySync', e);
+    return { skipped: false, error: String(e && e.message || e) };
   } finally {
     lock.releaseLock();
   }
