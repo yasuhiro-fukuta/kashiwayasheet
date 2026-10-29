@@ -36,6 +36,15 @@ function syncOptions(now, prevProcessedAt, disappeared) {
   const resubmitMarked = markOlderAsResubmitted(optSh, now);
   dlog(`Marked as resubmitted (old rows deleted): ${resubmitMarked.length} rows`);
 
+  //  ★2026-10-30 フォームの宿泊日・部屋の選び間違い・古い回答を
+  //    Lodgify 予約に合わせて直す (FormReconcile.gs)。失敗しても取込は続ける。
+  try {
+    const rc = reconcileFormOptionsWithLodgify(optSh, now);
+    dlog(`Form reconcile: moved ${rc.moved.length} / deleted ${rc.deleted.length}`);
+  } catch (e) {
+    Logger.log(`フォームとLodgifyの突き合わせに失敗 (処理は続行): ${e.stack || e}`);
+  }
+
   //  ★Lodgify の予約時オプション (アドオン) をここで同じ表に入れる。
   //    フォームの食事オプションと同じ扱いにするため、行の作りも同じ。
   //
