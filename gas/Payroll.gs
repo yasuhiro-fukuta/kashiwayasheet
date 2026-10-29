@@ -168,6 +168,26 @@ function readOptionsForPayroll_() {
 function orderSheetMonthOf_(name) {
   const O = CONFIG.PAYROLL.ORDER_SHEET;
   const s = toHalfWidth(String(name || ''));
+
+  //  ★2026-10-30 修正：11月・12月タブの見出しセルは「R８１１月」のように
+  //    年と月の間に区切りが無い。従来の YEAR_PATTERN だと「R81」を
+  //    令和81年 (2099年) と読み、11月以降のタブを丸ごと見落として
+  //    注文確認票にメモが1件も付かなかった。
+  //    区切りの無い「R＋数字＋月」は、数字を 令和年(1〜2桁)＋月 に分け、
+  //    月が1〜12で年が今年の前後1年に入る分け方だけを採る。
+  const glued = s.match(/R\s*(\d{2,4})\s*月/i);
+  if (glued && !/R\s*\d{1,2}\s*年/i.test(s)) {
+    const digits = glued[1];
+    const thisYear = todayJst().getFullYear();
+    for (let k = 1; k <= 2 && k < digits.length; k++) {
+      const year  = O.REIWA_BASE_YEAR + Number(digits.slice(0, k));
+      const month = Number(digits.slice(k));
+      if (month >= 1 && month <= 12 && Math.abs(year - thisYear) <= 1) {
+        return `${year}-${('0' + month).slice(-2)}`;
+      }
+    }
+  }
+
   const ym = s.match(O.YEAR_PATTERN);
   const mm = s.match(O.MONTH_PATTERN);
   if (!ym || !mm) return '';
