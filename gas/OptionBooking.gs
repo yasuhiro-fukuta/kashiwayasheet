@@ -90,7 +90,12 @@ function syncOptionBookings(now) {
       if (status === B.STATUS_CANCEL) {
         if (!eventId) return;
         const ev = fetchOptionEvent_(cal, eventId);
-        if (ev) { deleteOptionEvent_(ev); deleted++; }
+        if (ev) {
+          //  ★v2.31 予定がすでにカレンダーから消えている（手で消した・前回消した）ときは
+          //    「消えた」とみなして L列を空にする。以前は毎回エラーを出し続けていた（2026-11-01 31行目）。
+          try { deleteOptionEvent_(ev); deleted++; }
+          catch (e) { if (!isEventGoneError_(e)) throw e; }
+        }
         writes.push([rowNo, '', '']);
         return;
       }
@@ -321,6 +326,11 @@ function deleteOptionEvent_(ev) {
   if (typeof ev.deleteEvent === 'function') { ev.deleteEvent(); return; }
   if (typeof ev.deleteEventSeries === 'function') { ev.deleteEventSeries(); return; }
   throw new Error('予定を消せませんでした。カレンダーから手で消してください。');
+}
+
+/** 「予定が存在しない／すでに消えている」エラーか。 */
+function isEventGoneError_(e) {
+  return /does not exist|already been deleted|存在しません|削除されています/i.test(String((e && e.message) || e));
 }
 
 /** 'HH:mm' を分だけずらす。日をまたぐ場合は 00:00〜23:59 に収める。 */
