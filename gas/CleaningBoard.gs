@@ -513,8 +513,12 @@ function applyOverride(stays) {
     const d = fmtDate(row[C.CHECKIN - 1]);
     const room = String(row[C.ROOM - 1] || '').trim();
     if (!d || !room) return;
+    const rawPeople = row[C.GUESTS - 1];
     map[`${d}|${room}`] = {
-      people: numOrZero(row[C.GUESTS - 1]),
+      people: numOrZero(rawPeople),
+      //  ★2026-11-03：人数欄に 0 と書いたら「この階では寝ない」を明示したもの
+      //    （一棟貸しで家族を1階にまとめるとき等）。空欄とは区別する。
+      zero:   rawPeople !== '' && rawPeople !== null && numOrZero(rawPeople) === 0,
       name:   String(row[C.GUEST_NAME - 1] || '').trim(),
       memo:   String(row[C.MEMO - 1] || '').trim(),
       meal:   String(row[C.MEAL - 1] || '').trim(),
@@ -529,6 +533,10 @@ function applyOverride(stays) {
     if (hit) {
       if (hit.people > 0) {
         s.people = hit.people;
+        s.peopleSrc = '手動';
+      } else if (hit.zero) {
+        s.people = 0;
+        s.zeroOk = true;
         s.peopleSrc = '手動';
       }
       if (hit.name) s.name = hit.name;
