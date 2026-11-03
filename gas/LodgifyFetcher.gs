@@ -330,8 +330,10 @@ function normalizeLodgifyBooking(b, skipped) {
     //  ★2026-11-03 修正：Lodgify の rooms[].people は大人だけの数で、子どもが入らない
     //    （Renata Jurgel様 一棟貸し 大人2＋子ども1 が people=2 で取り込まれ、
     //    ボードの備考が「全2名」になって布団が2組しか敷かれなかった）。
-    //    大人＋子どもの合計と比べて大きい方を人数にする（乳児は布団を使わない前提で数えない）。
-    const people   = Math.max(numOrZero(rm.people), adults + children) || 0;
+    //    大人＋子ども＋乳児の合計と比べて大きい方を人数にする。
+    //    ★乳児も1人として数え、布団を1組用意する（2026-11-03 社長決定「あ」）。
+    const infants  = numOrZero(bd.infants);
+    const people   = Math.max(numOrZero(rm.people), adults + children + infants) || 0;
 
     const roomRaw = rm.room_type_id || rm.name || rm.room_type_name || b.property_id || '';
     const room    = resolveLodgifyRoom(rm, b);
