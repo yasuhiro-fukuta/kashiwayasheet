@@ -185,13 +185,21 @@ function backfillOptionGuests(optSh) {
     if (row[C.DELETED_FLAG - 1] === '削除') return;
 
     const cur = row[C.GUESTS - 1];
-    if (cur !== '' && cur !== null && cur !== undefined && numOrZero(cur) > 0) return;
-
     const d = fmtDate(row[C.CHECKIN - 1]);
     const room = String(row[C.ROOM - 1] || '').trim();
     if (!d || !room) return;
 
     const hit = findLodgifyBooking(bookings, room, d);
+
+    //  ★2026-11-03：以前の取り込みは子ども・乳児を数えておらず、少ない人数が
+    //    入ったままの行がある。Lodgify の人数（子ども・乳児込み）の方が多ければ直す。
+    if (cur !== '' && cur !== null && cur !== undefined && numOrZero(cur) > 0) {
+      if (hit && hit.people > numOrZero(cur)) {
+        guestCol[idx][0] = hit.people;
+        result.filled++; result.byLodgify++; dirty = true;
+      }
+      return;
+    }
     if (hit && hit.people > 0) {
       guestCol[idx][0] = hit.people;
       result.filled++; result.byLodgify++; dirty = true;
