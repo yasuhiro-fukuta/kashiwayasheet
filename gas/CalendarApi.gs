@@ -126,6 +126,7 @@ function writeApiCalDelete_(body) {
 }
 
 function writeApiOptionSync_() {
+  if (dolphinRuns_()) return { ok: false, moved: 'dolphin', error: DOLPHIN_MOVED_MSG };
   const r = syncOptionBookings(nowJst());
   return Object.assign({ ok: !!r.ok }, r, { summary: formatOptionBookingResult_(r) });
 }

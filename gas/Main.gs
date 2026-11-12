@@ -131,7 +131,38 @@ var LAST_OPTION_BOOKING_RESULT_ = null;
  *   skipped … 別の実行がロックを持っていて、今回は何もしなかった
  *   error   … runBatch が途中で落ちたときのエラー文
  */
+/**
+ * ★2026-11-12 社長決定「柏屋の毎時処理はドルフィンに一本化」の切替の合図。
+ *   dolphin_db（プロジェクトドルフィンのDB）の「設定」シートで MODE=prod かつ KASHIWAYA_RUNNER=dolphin のとき、
+ *   柏屋の毎時処理（予約同期・清掃ボード・カレンダー・ほなみや転記）はドルフィン側がこのスプレッドシートに対して回す。
+ *   そのあいだ、こちらの hourlySync・batch.run・option.sync は何もしない（二重に書かないため）。
+ *   合図が読めないとき（権限・シートなし・エラー）は false＝これまでどおりこちらが回す。
+ *   戻すときは KASHIWAYA_RUNNER を kashiwayasheet に戻す（ドルフィンの ?fn=kashiwayaBack）。
+ */
+const DOLPHIN_DB_ID = '1T6fZMfqn0AwuABAQqJYAnszjr6rOwMnHaNVlyk2DVWg';
+const DOLPHIN_MOVED_MSG = '柏屋の毎時処理はドルフィンに移りました。ドルフィンのAPI（api=kbatch、op=run／optionSync）を使ってください';
+function dolphinRuns_() {
+  try {
+    const sh = SpreadsheetApp.openById(DOLPHIN_DB_ID).getSheetByName('設定');
+    if (!sh) return false;
+    const rows = sh.getDataRange().getValues();
+    let mode = '', runner = '';
+    for (let i = 1; i < rows.length; i++) {
+      if (String(rows[i][0]) === 'MODE') mode = String(rows[i][1]);
+      if (String(rows[i][0]) === 'KASHIWAYA_RUNNER') runner = String(rows[i][1]);
+    }
+    return mode === 'prod' && runner === 'dolphin';
+  } catch (e) {
+    Logger.log(`dolphinRuns_ が読めないのでこちらで回す: ${e}`);
+    return false;
+  }
+}
+
 function hourlySync() {
+  if (dolphinRuns_()) {
+    Logger.log('hourlySync SKIPPED: 柏屋の毎時処理はドルフィンが受け持ち中。');
+    return { skipped: true, moved: true, error: '' };
+  }
   const lock = LockService.getScriptLock();
   if (!lock.tryLock(30 * 1000)) {
     Logger.log('hourlySync SKIPPED: another execution is running.');

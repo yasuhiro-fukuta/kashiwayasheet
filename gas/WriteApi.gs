@@ -328,6 +328,7 @@ function writeApiRunBatch_() {
   const t0 = Date.now();
   LAST_OPTION_BOOKING_RESULT_ = null;
   const h = hourlySync() || {};
+  if (h.moved) return { ok: false, moved: 'dolphin', ranAt: nowJst_(), seconds: 0, error: DOLPHIN_MOVED_MSG, optionBooking: null };
   const ob = LAST_OPTION_BOOKING_RESULT_;
   const res = {
     ok: !h.skipped && !h.error,
