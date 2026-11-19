@@ -197,6 +197,8 @@ function buildDmOrderMessages_(entries, dmRows, today) {
   dmRows.forEach(d => {
     if (d.date < today) return;
     if (d.status !== D.STATUS_ACTIVE && d.status !== D.STATUS_CANCEL) return;
+    //  提携レストランでの夕食 (ピエロ等) はほなみやの注文確認票に無くて正しい
+    if (d.kind === 'external') return;
     const k = `${d.date}|${d.room}`;
     if (!byKey[k]) byKey[k] = [];
     byKey[k].push(d);
