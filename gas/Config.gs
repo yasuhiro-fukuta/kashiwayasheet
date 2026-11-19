@@ -704,6 +704,12 @@ const CONFIG = {
     { test: /^\s*(?:Japanese\s+)?(?:Wagyu\s+)?Sukiyaki/i,label: 'Wagyu Sukiyaki',          kind: 'dinner',    order: 6 },
     { test: /^\s*Shabu[-\s]?Shabu/i,                     label: 'Shabu-Shabu',             kind: 'dinner',    order: 2 },
     { test: /^\s*Ochazuke/i,                             label: 'Ochazuke Breakfast',      kind: 'breakfast', order: 9 },
+
+    //  ── 提携レストランでの夕食 (2026-11-19 社長決定：ピエロ限定オムライスコース) ──
+    //   注文ページで事前決済し、ゲストは店で食べる。kind 'external' は
+    //   ほなみやの夕食ではないので、仕出しの人数・遅番の夕食判定・
+    //   注文確認票との照合には入れない (ボードには (paid) で出す)。
+    { test: /^\s*Pierrot/i,                             label: 'Pierrot Omurice',         kind: 'external',  order: 8 },
   ],
 
   // 食事サマリに価格(¥6,000等)も併記するか
@@ -1087,7 +1093,7 @@ const CONFIG = {
       //     夕食 1セット = 2名分
       //     朝食 1セット = 1名分
       //   突合するときは必ず人数に揃えてから比べること。
-      PERSONS_PER_SET: { dinner: 2, breakfast: 1, other: 1 },
+      PERSONS_PER_SET: { dinner: 2, breakfast: 1, external: 1, other: 1 },
 
       //  注文確認票の日本語商品名 → 共通ラベル。
       //  ★先頭一致。並び順が効くので、長いもの/限定的なものを上に置く。
@@ -1101,6 +1107,8 @@ const CONFIG = {
         { test: /^和牛BBQ|^ＢＢＱ|^BBQ/i,   label: 'Wagyu BBQ',                kind: 'dinner' },
         { test: /^ビーグル冷|^ビーガン冷|^ヴィーガン冷/, label: 'Vegan Cold Shabu-Shabu',   kind: 'dinner' },
         { test: /^ビーグル鍋|^ビーガン鍋|^ヴィーガン鍋/, label: 'Vegan Hot Pot & Chirashi', kind: 'dinner' },
+        //  提携レストラン (DMからの食事注文の品目「ピエロ」。注文確認票には出ない)
+        { test: /^ピエロ|^Pierrot/i,         label: 'Pierrot Omurice',          kind: 'external' },
 
         //  旧フォームの略称。"Shabu(2人用)" のように単語が短い。
         //  ★CONFIG.MEALS のラベルでは当たらないのでここで拾う。
