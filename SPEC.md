@@ -107,6 +107,7 @@
 | `Diagnose.gs` | 303 | 突合が合わないときの原因切り分け |
 | `SelfTest.gs` | 545 | 配線とロジックの自己診断（書き込みなし） |
 | `SheetWeight.gs` | 195 | シートが重い原因の測定と削減 |
+| `IraiWatch.gs` | 330 | 依頼箱の「未着手」を見て実行役タスクを即時起動（12.2） |
 
 ---
 
@@ -931,6 +932,51 @@ LatestOptions の指摘も、その日の同じ階の行の D列に出します�
 > **`WebApi.gs` を変更したら、`main` に push するだけでは公開中のデプロイは
 > 更新されません。** デプロイ → デプロイを管理 → **新バージョン** が必要です。
 
+### 12.2 依頼箱の即時起動（`IraiWatch.gs`。2026-11-21）
+
+音声のClaudeが依頼箱シート「依頼」（A受付日時／B種類／C中身／D状態 未着手→実行中→完了／E結果リンク／Fメモ）に
+「未着手」の行を書いたら、**5分以内**に実行役のスケジュールタスク（Claude Code のルーティン）を
+API トリガーで起こす。これまでは実行役の定時（5:50・17:50）まで最大12時間待っていた。
+
+**仕組み**（`iraiWatch`、5分ごとの時間トリガー）
+
+1. Script Properties に `IRAI_FIRE_TOKEN` が無ければ何もしない（トークン未発行の間は無害）
+2. 依頼箱の D列が「未着手」の行を集める。無ければ終わり
+3. 「実行中」の行があり、その受付（A列）から30分以内なら撃たない（二重起動の防止）。受付が読めない「実行中」は止めない
+4. 未着手のうち、まだ撃っていない行（`IRAI_FIRED` に 行番号＋受付 が無い行）があれば
+   `POST https://api.anthropic.com/v1/claude_code/routines/<IRAI_TRIGGER_ID>/fire` を **1回だけ**呼ぶ。
+   本文は「依頼箱に未着手の依頼があります（行番号: …）。指示文どおり依頼箱を処理してください。」の固定文だけで、**依頼の中身は送らない**
+5. 成功（2xx）→ `IRAI_FIRED` に記録し、撃った行の F列に「自動起動 HH:mm」を追記（既存のメモは `/` でつないで残す）。
+   失敗 → 記録しない（次の回に再試行）。HTTP コードと session_url はログに残す（トークンは出さない）
+6. 1日（日本時間）に60回撃ったらその日はもう撃たない（暴走止め。ルーティン側の上限は1時間30回）。`IRAI_FIRED` は7日より古いものを捨てる
+7. 多重実行は `LockService.getUserLock()` で防ぐ。毎時バッチの `ScriptLock` とは別の鍵にして、バッチ中でも待たせない
+
+判断（行の選び方・二重起動・7日の掃除・60回の上限）は純粋関数 `iraiPlan_` などに分けてあり、
+`test/irai-watch.test.js` で検証している（15.4）。設定値は `CONFIG.IRAI`（Config.gs）。
+
+**書き込みAPI（WriteApi.gs）の action**（既存の token 認証の下）
+
+| action | 中身 | 返り値 |
+|---|---|---|
+| `irai.setup` | `{fireToken?, triggerId?, sheetId?}` を Script Properties に保存し、`iraiWatch` の5分ごとのトリガーが無ければ作る（あれば作らない）。初回は `sheetId`（依頼箱のスプレッドシートID）が必須。保存後に依頼箱が開けるかを確かめる | `trigger: created/exists`・`tokenSet`・`sheetIdSet`・`routineTriggerId` など。**トークンの値は返さない** |
+| `irai.status` | 状態を見る（読むだけ） | `triggerActive`・`tokenSet`・`sheetIdSet`・`firesToday`・`recentFires`（直近10回の時刻・行番号・session） |
+| `irai.off` | `iraiWatch` のトリガーを消す（**戻し方**）。トークン等の設定値は残すので、`irai.setup` で再開できる | `removed`（消した本数） |
+
+`setupTriggers()`（メニュー「毎時トリガーを設定」）は `hourlySync` のトリガーだけを消して作り直すので、`iraiWatch` のトリガーには触らない。
+
+**本番で動かす手順**
+
+1. PR を main にマージ（GitHub Actions が Apps Script とウェブアプリに反映）
+2. 社長がルーティン（実行役タスク）の編集画面で API トリガーのトークンを発行する
+3. 書き込みAPIに `{"action":"irai.setup","fireToken":"…","sheetId":"…"}` を POST（`triggerId` は省略で既定の実行役）
+4. `irai.status` で `triggerActive: true`・`tokenSet: true` を確かめ、依頼箱にテスト行を1行入れて5分以内に `recentFires` に載ることを見る
+
+**戻し方**：`irai.off`（トリガーだけ消える）。完全にやめるときは Script Properties の `IRAI_*` も消す。
+
+**スコープ**：`appsscript.json` は変えていない（`oauthScopes` を書かない自動検出のまま）。使うサービスは
+`UrlFetchApp`（LodgifyFetcher.gs ほか）・`SpreadsheetApp.openById`（CheckinForm.gs・OrderExport.gs ほか）・
+`ScriptApp` のトリガー作成削除（Main.gs `setupTriggers`）・`PropertiesService`・`LockService` で、どれも既存コードが使っている範囲。
+
 ---
 
 ## 13. 設定とシークレット
@@ -974,6 +1020,10 @@ LatestOptions の指摘も、その日の同じ階の行の D列に出します�
 | `OPTION_CALENDAR_ID` | `setOptionCalendarId('...')` | オプション予約のカレンダー（未設定なら `primary`） |
 | `WEB_API_TOKEN` | エディタ ⚙ プロジェクトの設定 → スクリプトプロパティ に手で追加 | Web API の認証 |
 | `LAST_PROCESSED_AT` | GAS が自動で書く | バッチの最終処理日時 |
+| `IRAI_FIRE_TOKEN` | 書き込みAPI `irai.setup` の `fireToken` | 実行役ルーティンの API トリガーのトークン（12.2）。値はどこにも返さない |
+| `IRAI_SHEET_ID` | `irai.setup` の `sheetId` | 依頼箱のスプレッドシートID |
+| `IRAI_TRIGGER_ID` | `irai.setup` の `triggerId`（省略時は `CONFIG.IRAI.DEFAULT_TRIGGER_ID`） | 起こす実行役ルーティンのID |
+| `IRAI_FIRED` | GAS が自動で書く | 撃った記録（時刻・行番号・受付・session。7日で捨てる） |
 | `ICAL_URL_0〜3` | `setupScriptProperties()` | iCal URL（現状はコード側の値を使用） |
 
 ### 13.3 GitHub Actions のシークレット
@@ -1124,6 +1174,10 @@ Node の `vm` モジュールで `SpreadsheetApp` / `Utilities` / `Logger` /
 | `readOrderSheetAudit_()` | `buildOrderSheetAudit()` |
 | `scanOrderSheet()` | `buildAnnotateMessages_()` |
 | （行を渡す） | `buildOptionEventSpec()` |
+| `iraiWatch()` | `iraiPlan_()`・`iraiPruneFired_()`・`iraiFiresToday_()` |
+
+依頼箱の即時起動（`IraiWatch.gs`）だけは、このハーネスを `test/irai-watch.test.js` として
+リポジトリに置いてある（`node --test test/irai-watch.test.js`。`test/` は clasp の rootDir の外なので Apps Script には送られない）。
 
 ---
 

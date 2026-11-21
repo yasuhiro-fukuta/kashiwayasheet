@@ -42,6 +42,12 @@
  *   payment.upsert / payment.find               … 入金台帳（PaymentLedger.gs）
  *   rule.append / rule.list                     … 返信ルール（返信方針・前例など）
  *   cal.list / cal.delete / option.sync          … カレンダーを読む・消す（CalendarApi.gs。2026-10-26）
+ *   irai.setup        … 依頼箱の即時起動 (IraiWatch.gs。2026-11-21) を設定する
+ *                        {fireToken?, triggerId?, sheetId?} を Script Properties に保存し、
+ *                        iraiWatch の5分ごとのトリガーが無ければ作る。
+ *                        ★返り値にトークンは含めない (設定済みかどうかだけ)
+ *   irai.status       … トリガーの有無・トークン設定の有無・直近に撃った記録
+ *   irai.off          … iraiWatch のトリガーを消す (戻し方。設定値は残す)
  *   batch.run         … 毎時バッチ (hourlySync) を今すぐ回す
  *                        返り値に optionBooking {created, updated, deleted, errors, skippedReason}。
  *                        別のバッチが実行中で回せなかったときは ok:false, error:'busy…'
@@ -73,6 +79,7 @@ function doPost(e) {
     if (action === 'rule.list') return jsonOut_(writeApiRuleList_(body));
     if (action === 'cal.list') return jsonOut_(writeApiCalList_(body));
     if (action === 'payment.find') return jsonOut_(writeApiPaymentFind_(body));
+    if (action === 'irai.status') return jsonOut_(iraiStatus_());
 
     const lock = LockService.getScriptLock();
     if (!lock.tryLock(30 * 1000)) return jsonOut_({ ok: false, error: 'busy (バッチ実行中)。少し待って再送' });
@@ -91,6 +98,8 @@ function doPost(e) {
       if (action === 'cal.delete') return jsonOut_(writeApiCalDelete_(body));
       if (action === 'option.sync') return jsonOut_(writeApiOptionSync_());
       if (action === 'payment.upsert') return jsonOut_(writeApiPaymentUpsert_(body.rows));
+      if (action === 'irai.setup') return jsonOut_(iraiSetup_(body));
+      if (action === 'irai.off') return jsonOut_(iraiOff_());
     } finally {
       lock.releaseLock();
     }
