@@ -1318,6 +1318,28 @@ const CONFIG = {
   },
   OPTBK_WIDTH: 12,
 
+  // 依頼箱の即時起動 (IraiWatch.gs。2026-11-21 社長決定「い」)
+  //  ★IDとトークンはコードに書かない (公開リポジトリ)。WriteApi の irai.setup で
+  //    Script Properties に入れる。実行役タスクのIDだけは秘密ではないので既定値を持つ。
+  IRAI: {
+    SHEET_NAME: '依頼',
+    COL: { RECEIVED: 1, KIND: 2, BODY: 3, STATUS: 4, RESULT: 5, MEMO: 6 },   // A〜F
+    STATUS_TODO: '未着手',
+    STATUS_RUNNING: '実行中',
+    RUNNING_GUARD_MIN: 30,          // 受付から30分以内の「実行中」があれば撃たない
+    DAILY_FIRE_CAP: 60,             // 1日(日本時間)に撃つ上限。超えたら撃たない (暴走止め)
+    KEEP_DAYS: 7,                   // 撃った記録はこれより古いものを捨てる
+    EVERY_MINUTES: 5,               // 時間トリガーの間隔
+    DEFAULT_TRIGGER_ID: 'trig_01MbvsAj8hwqk6BXyWGxD6sA',
+    FIRE_URL: 'https://api.anthropic.com/v1/claude_code/routines/{id}/fire',
+    BETA: 'experimental-cc-routine-2026-04-01',
+    API_VERSION: '2023-06-01',
+    PROP_TOKEN: 'IRAI_FIRE_TOKEN',
+    PROP_TRIGGER_ID: 'IRAI_TRIGGER_ID',
+    PROP_SHEET_ID: 'IRAI_SHEET_ID',
+    PROP_FIRED: 'IRAI_FIRED',
+  },
+
   PROP: {
     LAST_PROCESSED: 'LAST_PROCESSED_AT',
     LAST_OPEN_RUN:  'LAST_OPEN_RUN_AT',
