@@ -496,20 +496,26 @@ const CONFIG = {
       //      夕食はすべて「Single charge / Per stay」(基本は個数1)、
       //      朝食だけ「Per quantity / Per stay」(個数が動く)。
       //      個数が2以上でも 金額÷単価 で正しく割り出せる。
+      //    ★2026-11-22 社長決定（ほなみや値上げ）：2026-12-01 0:00 JST 以降に受けた
+      //      注文は新料金、それより前の予約は旧料金のまま。両方の予約が混ざるので
+      //      units に [旧, 新] を並べ、金額がどちらかの整数倍になる方で個数を出す。
+      //      両方で整数倍になり個数が食い違うとき (例 42,000 = 6,000×7 = 7,000×6) は
+      //      黙って選ばず「⚠個数未確認」にする (resolveAddonQuantity)。
       ADDON_UNITS: [
-        { test: /Chicken\s*Hot\s*Pot.*\bfor\s*3\b/i,                      unit:  8000 },
-        { test: /Chicken\s*Hot\s*Pot.*\bfor\s*2\b/i,                      unit:  6000 },
-        { test: /Pork\s*Hot\s*Pot.*\bfor\s*3\b/i,                         unit: 11000 },
-        { test: /Pork\s*Hot\s*Pot.*\bfor\s*2\b/i,                         unit:  8000 },
-        { test: /Pork\s*Chilled\s*Pot.*\bfor\s*3\b/i,                     unit: 11000 },
-        { test: /Pork\s*Chilled\s*Pot.*\bfor\s*2\b/i,                     unit:  8000 },
-        { test: /Wagyu\s*Beef\s*Hot\s*Pot.*\bfor\s*3\b/i,                unit: 14000 },
-        { test: /Wagyu\s*Beef\s*Hot\s*Pot.*\bfor\s*2\b/i,                unit: 10000 },
-        { test: /Vegan\s*Gluten[-\s]?free\s*Hot\s*Pot.*\bfor\s*3\b/i,    unit: 11000 },
-        { test: /Vegan\s*Gluten[-\s]?free\s*Hot\s*Pot.*\bfor\s*2\b/i,    unit:  8000 },
-        { test: /Vegan\s*Gluten[-\s]?free\s*Chilled\s*Pot.*\bfor\s*3\b/i,unit: 11000 },
-        { test: /Vegan\s*Gluten[-\s]?free\s*Chilled\s*Pot.*\bfor\s*2\b/i,unit:  8000 },
-        { test: /Ochazuke/i,                                                 unit:  1500 },
+        { test: /Chicken\s*Hot\s*Pot.*\bfor\s*3\b/i,                      units: [ 8000, 10000] },
+        { test: /Chicken\s*Hot\s*Pot.*\bfor\s*2\b/i,                      units: [ 6000,  7000] },
+        { test: /Pork\s*Hot\s*Pot.*\bfor\s*3\b/i,                         units: [11000, 13000] },
+        { test: /Pork\s*Hot\s*Pot.*\bfor\s*2\b/i,                         units: [ 8000,  9000] },
+        { test: /Pork\s*Chilled\s*Pot.*\bfor\s*3\b/i,                     units: [11000, 13000] },
+        { test: /Pork\s*Chilled\s*Pot.*\bfor\s*2\b/i,                     units: [ 8000,  9000] },
+        { test: /Wagyu\s*Beef\s*Hot\s*Pot.*\bfor\s*4\b/i,                units: [18000, 21000] },
+        { test: /Wagyu\s*Beef\s*Hot\s*Pot.*\bfor\s*3\b/i,                units: [14000] },          // 新料金では売らない (偶数名分のみ)
+        { test: /Wagyu\s*Beef\s*Hot\s*Pot.*\bfor\s*2\b/i,                units: [10000, 11000] },
+        { test: /Vegan\s*Gluten[-\s]?free\s*Hot\s*Pot.*\bfor\s*3\b/i,    units: [11000, 13000] },
+        { test: /Vegan\s*Gluten[-\s]?free\s*Hot\s*Pot.*\bfor\s*2\b/i,    units: [ 8000,  9000] },
+        { test: /Vegan\s*Gluten[-\s]?free\s*Chilled\s*Pot.*\bfor\s*3\b/i,units: [11000, 13000] },
+        { test: /Vegan\s*Gluten[-\s]?free\s*Chilled\s*Pot.*\bfor\s*2\b/i,units: [ 8000,  9000] },
+        { test: /Ochazuke/i,                                                 units: [ 1500] },
       ],
       //  逆算した個数が整数にならないときの許容幅 (端数・値引き対策)
       UNIT_TOLERANCE: 0.02,

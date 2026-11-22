@@ -251,29 +251,39 @@ function resolveAddonQuantity(name, qtyFromApi, price) {
   const amount = numOrZero(price);
   if (amount <= 0) return { qty: 1, src: 'API' };   // 金額が無いなら判断材料なし
 
-  const unit = lookupAddonUnitPrice(name);
-  if (unit > 0) {
-    const raw = amount / unit;
-    const n   = Math.round(raw);
+  const units = lookupAddonUnitPrices(name);
+  if (units.length) {
     const tol = (CONFIG.LODGIFY.ADDONS.UNIT_TOLERANCE != null)
       ? CONFIG.LODGIFY.ADDONS.UNIT_TOLERANCE : 0.02;
-    if (n >= 1 && Math.abs(raw - n) <= tol) return { qty: n, src: '逆算' };
-    // 単価と合わない = 値段が変わったか別商品。黙って丸めない。
-    dlog(`アドオンの個数を逆算できない: "${name}" 金額${amount} ÷ 単価${unit} = ${raw}`);
+    // 2026-12-01 値上げ：旧・新どちらの単価でも割り切れるか見る。
+    const hits = [];
+    units.forEach(unit => {
+      const raw = amount / unit;
+      const n   = Math.round(raw);
+      if (n >= 1 && Math.abs(raw - n) <= tol && hits.indexOf(n) < 0) hits.push(n);
+    });
+    if (hits.length === 1) return { qty: hits[0], src: '逆算' };
+    // 単価と合わない (値段が変わったか別商品)、または旧・新で個数が食い違う。黙って丸めない。
+    dlog(`アドオンの個数を逆算できない: "${name}" 金額${amount} ÷ 単価${units.join('/')} → 候補${hits.join('/') || 'なし'}`);
     return { qty: 1, src: '不明' };
   }
 
   return { qty: 1, src: '不明' };
 }
 
-/** description に当たる単価を CONFIG から引く (上から順、最初に当たったもの) */
-function lookupAddonUnitPrice(name) {
+/**
+ * description に当たる単価の一覧を CONFIG から引く (上から順、最初に当たったもの)。
+ * units: [旧, 新] の形。古い書き方 unit: 数値 も読む。
+ */
+function lookupAddonUnitPrices(name) {
   const list = (CONFIG.LODGIFY.ADDONS && CONFIG.LODGIFY.ADDONS.ADDON_UNITS) || [];
   const s = String(name == null ? '' : name);
   for (const u of list) {
-    if (u && u.test && u.test.test(s)) return numOrZero(u.unit);
+    if (!(u && u.test && u.test.test(s))) continue;
+    const raw = Array.isArray(u.units) ? u.units : [u.unit];
+    return raw.map(numOrZero).filter(x => x > 0);
   }
-  return 0;
+  return [];
 }
 
 /** "Dinner - Chicken Hot Pot for 3" → "Chicken Hot Pot for 3" */
