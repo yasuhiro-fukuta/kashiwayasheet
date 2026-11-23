@@ -48,6 +48,9 @@
  *                        ★返り値にトークンは含めない (設定済みかどうかだけ)
  *   irai.status       … トリガーの有無・トークン設定の有無・直近に撃った記録
  *   irai.off          … iraiWatch のトリガーを消す (戻し方。設定値は残す)
+ *   staffline.setup / status / list / setRow / setName / send / content / off
+ *                     … スタッフ連絡LINE（StaffLine.gs。2026-11-23）。send は社長の「あ」の後だけ
+ *                        ★LINE の Webhook は ?src=staffline&k=… で来て、token なしでここより前に分岐する
  *   batch.run         … 毎時バッチ (hourlySync) を今すぐ回す
  *                        返り値に optionBooking {created, updated, deleted, errors, skippedReason}。
  *                        別のバッチが実行中で回せなかったときは ok:false, error:'busy…'
@@ -58,6 +61,9 @@
  */
 
 function doPost(e) {
+  //  スタッフ連絡LINEの Webhook（StaffLine.gs。2026-11-23）。合言葉 k は URL で照合する
+  if (e && e.parameter && e.parameter.src === 'staffline') return staffLineHandleWebhook_(e);
+
   let body;
   try {
     body = JSON.parse((e && e.postData && e.postData.contents) || '{}');
@@ -80,6 +86,9 @@ function doPost(e) {
     if (action === 'cal.list') return jsonOut_(writeApiCalList_(body));
     if (action === 'payment.find') return jsonOut_(writeApiPaymentFind_(body));
     if (action === 'irai.status') return jsonOut_(iraiStatus_());
+    if (action === 'staffline.status') return jsonOut_(staffLineStatus_());
+    if (action === 'staffline.list') return jsonOut_(staffLineList_(body));
+    if (action === 'staffline.content') return jsonOut_(staffLineContent_(body));
 
     const lock = LockService.getScriptLock();
     if (!lock.tryLock(30 * 1000)) return jsonOut_({ ok: false, error: 'busy (バッチ実行中)。少し待って再送' });
@@ -100,6 +109,11 @@ function doPost(e) {
       if (action === 'payment.upsert') return jsonOut_(writeApiPaymentUpsert_(body.rows));
       if (action === 'irai.setup') return jsonOut_(iraiSetup_(body));
       if (action === 'irai.off') return jsonOut_(iraiOff_());
+      if (action === 'staffline.setup') return jsonOut_(staffLineSetup_(body));
+      if (action === 'staffline.setRow') return jsonOut_(staffLineSetRow_(body));
+      if (action === 'staffline.setName') return jsonOut_(staffLineSetName_(body));
+      if (action === 'staffline.send') return jsonOut_(staffLineSend_(body));
+      if (action === 'staffline.off') return jsonOut_(staffLineOff_());
     } finally {
       lock.releaseLock();
     }
