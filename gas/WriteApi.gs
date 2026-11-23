@@ -48,6 +48,9 @@
  *                        ★返り値にトークンは含めない (設定済みかどうかだけ)
  *   irai.status       … トリガーの有無・トークン設定の有無・直近に撃った記録
  *   irai.off          … iraiWatch のトリガーを消す (戻し方。設定値は残す)
+ *   line.setup / line.status / line.list / line.setStatus / line.off
+ *                     … 社長の個人LINEの通知を入れる「LINE受信」タブ (LineIntake.gs。2026-11-23)
+ *                        MacroDroid からの受け口は ?src=line&key=… (合言葉ではなくLINE用の鍵)
  *   batch.run         … 毎時バッチ (hourlySync) を今すぐ回す
  *                        返り値に optionBooking {created, updated, deleted, errors, skippedReason}。
  *                        別のバッチが実行中で回せなかったときは ok:false, error:'busy…'
@@ -58,6 +61,11 @@
  */
 
 function doPost(e) {
+  // 社長の個人LINEの通知（MacroDroid）。合言葉ではなくLINE用の鍵で受ける（LineIntake.gs）
+  if (e && e.parameter && String(e.parameter.src || '').toLowerCase() === 'line') {
+    try { return jsonOut_(lineIntake_(e)); }
+    catch (err) { return jsonOut_({ ok: false, error: String(err && err.message || err) }); }
+  }
   let body;
   try {
     body = JSON.parse((e && e.postData && e.postData.contents) || '{}');
@@ -80,6 +88,8 @@ function doPost(e) {
     if (action === 'cal.list') return jsonOut_(writeApiCalList_(body));
     if (action === 'payment.find') return jsonOut_(writeApiPaymentFind_(body));
     if (action === 'irai.status') return jsonOut_(iraiStatus_());
+    if (action === 'line.status') return jsonOut_(lineStatus_());
+    if (action === 'line.list') return jsonOut_(lineList_(body));
 
     const lock = LockService.getScriptLock();
     if (!lock.tryLock(30 * 1000)) return jsonOut_({ ok: false, error: 'busy (バッチ実行中)。少し待って再送' });
@@ -100,6 +110,9 @@ function doPost(e) {
       if (action === 'payment.upsert') return jsonOut_(writeApiPaymentUpsert_(body.rows));
       if (action === 'irai.setup') return jsonOut_(iraiSetup_(body));
       if (action === 'irai.off') return jsonOut_(iraiOff_());
+      if (action === 'line.setup') return jsonOut_(lineSetup_(body));
+      if (action === 'line.setStatus') return jsonOut_(lineSetStatus_(body));
+      if (action === 'line.off') return jsonOut_(lineOff_());
     } finally {
       lock.releaseLock();
     }
